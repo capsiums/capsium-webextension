@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Capsium Viewer",
+  "version": "1.0",
+  "description": "Chrome extension to view Capsium packages",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "host_permissions": [
+    "file:///*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

@@ -1,0 +1,4 @@
+= Capsium Webextension for Chrome
+
+This extension is to load a `.cap` Capsium package and render it in the browser.
+
