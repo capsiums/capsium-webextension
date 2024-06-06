@@ -5,7 +5,11 @@
   "description": "Chrome extension to view Capsium packages",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "unlimitedStorage",
+    "alarms",
+    "declarativeNetRequest",
+    "offscreen"
   ],
   "background": {
     "service_worker": "background.js"
@@ -14,7 +18,7 @@
     "default_popup": "popup.html"
   },
   "host_permissions": [
-    "file:///*"
+    "https://*.cap/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
