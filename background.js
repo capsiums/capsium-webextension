@@ -203,6 +203,7 @@ async function readCapFile(fileDataURI) {
   const blob = await fetch(fileDataURI).then(res => res.blob());
 
   const zip = await JSZip.loadAsync(blob);
+
   const metadata = JSON.parse(await zip.file("metadata.json").async("text"));
   const manifest = JSON.parse(await zip.file("manifest.json").async("text"));
   const routes = JSON.parse(await zip.file("routes.json").async("text"));
@@ -223,7 +224,7 @@ async function readCapFile(fileDataURI) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "openCapFile") {
     /**
-     * Understand, here base64 is quite important, since we can't send arrayBuffer or Blob directly
+     * Understand, here dataURI is quite important, since we can't send arrayBuffer or Blob directly
      */
     const fileDataURI = message.dataURI;
 
