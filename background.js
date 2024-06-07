@@ -125,8 +125,18 @@ async function storeCapContents(manifest, routes, zip) {
   return capId;
 }
 
-const convertTextToDataURI = (text, contentType) => {
-  return `data:${contentType};base64,${btoa(text)}`;
+const convertTextToDataURI = async (text, contentType) => {
+
+  const blob = new Blob([text], { type: contentType });
+
+  const dataURI = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  })
+
+  return dataURI;
 }
 
 async function setupCapRedirectRules(capId, routes) {
@@ -135,8 +145,8 @@ async function setupCapRedirectRules(capId, routes) {
 
   const rules = [];
   const deleteIds = [];
-  for (const { path, target } of routes) {
 
+  await Promise.all(routes.map(async ({ path, target }) => {
     const url = `https://${capId}.cap${path}`;
 
     const fileToUse = target.file;
@@ -151,7 +161,7 @@ async function setupCapRedirectRules(capId, routes) {
 
     const { contentType, fileContent } = contentInfo[fileId];
 
-    const dataURI = convertTextToDataURI(fileContent, contentType);
+    const dataURI = await convertTextToDataURI(fileContent, contentType);
 
     const rule = {
       id: id++,
@@ -178,7 +188,7 @@ async function setupCapRedirectRules(capId, routes) {
 
     deleteIds.push(rule.id);
     rules.push(rule);
-  }
+  }));
 
   await chrome.declarativeNetRequest.updateSessionRules({
     removeRuleIds: deleteIds,
@@ -186,8 +196,13 @@ async function setupCapRedirectRules(capId, routes) {
   });
 }
 
-async function readCapFile(fileBase64) {
-  const zip = await JSZip.loadAsync(fileBase64, { base64: true });
+async function readCapFile(fileDataURI) {
+
+  // Convert the data URI to binary array buffer
+  // We can definitely use atob here, but our dataURI can have special characters
+  const blob = await fetch(fileDataURI).then(res => res.blob());
+
+  const zip = await JSZip.loadAsync(blob);
   const metadata = JSON.parse(await zip.file("metadata.json").async("text"));
   const manifest = JSON.parse(await zip.file("manifest.json").async("text"));
   const routes = JSON.parse(await zip.file("routes.json").async("text"));
@@ -210,9 +225,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     /**
      * Understand, here base64 is quite important, since we can't send arrayBuffer or Blob directly
      */
-    const fileBase64 = message.fileBase64;
+    const fileDataURI = message.dataURI;
 
-    readCapFile(fileBase64).then((pkg) => {
+    readCapFile(fileDataURI).then((pkg) => {
       sendResponse(pkg);
     }).catch((error) => {
       console.error("Error reading .cap file:", error);
