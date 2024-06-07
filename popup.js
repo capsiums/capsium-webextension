@@ -14,10 +14,10 @@ capFileInput.addEventListener("change", function(event) {
     const reader = new FileReader();
     reader.onload = function(event) {
       /**
-       * Understand, here base64 is quite important, since we can't send arrayBuffer or Blob directly
+       * Understand, here dataURI is quite important, since we can't send arrayBuffer or Blob directly
        */
-      const base64String = event.target.result.split(",")[1];
-      chrome.runtime.sendMessage({ action: "openCapFile", fileBase64: base64String }, function(response) {
+      const dataURI = event.target.result;
+      chrome.runtime.sendMessage({ action: "openCapFile", dataURI }, function(response) {
         if (response.error) {
           packageInfoDiv.textContent = response.error;
         } else {
