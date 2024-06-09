@@ -68,14 +68,15 @@ async function storeCapContents(manifest, routes, zip) {
     // If file is html, we need to replace the relative paths with absolute paths
     // Without DOMParser, since we are in the background script
     if (contentType === "text/html") {
-
+      
       const promise = new Promise((resolve, reject) => {
-        chrome.runtime.onMessage.addListener((message) => {
-          if(message.type === 'domParser') {
-            chrome.offscreen.closeDocument();
+        const listener = async (message) => {
+          if (message.type === 'domParser') {
+            chrome.runtime.onMessage.removeListener(listener);
             resolve(message.content);
           }
-        });
+        }
+        chrome.runtime.onMessage.addListener(listener);
       });
 
       await chrome.offscreen.createDocument({
@@ -91,6 +92,7 @@ async function storeCapContents(manifest, routes, zip) {
       });
 
       fileContent = await promise;
+      await chrome.offscreen.closeDocument();
     }
 
     const fileId = `${capId}-${fileName}`;
