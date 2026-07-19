@@ -1,0 +1,46 @@
+body {
+  font-family: Arial, sans-serif;
+  padding: 12px;
+  min-width: 320px;
+}
+
+h1 {
+  font-size: 1.2rem;
+  margin-top: 0;
+}
+
+h2 {
+  font-size: 1rem;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+}
+
+dt {
+  font-weight: bold;
+}
+
+dd {
+  margin: 0;
+}
+
+.error {
+  color: #a1323a;
+}
+
+.valid {
+  color: #0f6b83;
+}
+
+.invalid {
+  color: #a1323a;
+}
+
+ul {
+  padding-left: 1.2rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
