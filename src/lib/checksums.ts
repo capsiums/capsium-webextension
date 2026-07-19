@@ -3,6 +3,8 @@
  * (crypto.subtle — available in service workers and Node >= 20).
  */
 
+import { SIGNATURE_FILE } from './signatures';
+
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
@@ -18,7 +20,8 @@ export interface ChecksumFailure {
 }
 
 /**
- * Verify that every file (except security.json itself) has a checksum and
+ * Verify that every file (except security.json itself and signature.sig —
+ * the signature can never be checksum-covered, §6a) has a checksum and
  * that all checksums match. Returns the list of failures; empty = valid.
  */
 export async function verifyChecksums(
@@ -30,7 +33,7 @@ export async function verifyChecksums(
   for (const [path, bytes] of [...files.entries()].sort(([a], [b]) =>
     a.localeCompare(b),
   )) {
-    if (path === 'security.json') continue;
+    if (path === 'security.json' || path === SIGNATURE_FILE) continue;
     const expected = checksums[path];
     if (expected === undefined) {
       failures.push({ path, reason: 'missing-checksum' });

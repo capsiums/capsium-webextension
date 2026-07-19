@@ -220,6 +220,7 @@ export class CapsiumService {
       routes: pkg.routes.routes.map(toRouteView),
       validity: pkg.validity,
       checksums: pkg.checksums,
+      signature: pkg.signature,
     };
   }
 }

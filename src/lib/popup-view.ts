@@ -73,6 +73,15 @@ export function renderPackageInfo(
         : 'Integrity: no security.json — checksums not available',
     ),
   );
+  box.append(
+    el(
+      doc,
+      'p',
+      info.signature === 'verified'
+        ? 'Signature: RSA-SHA256 verified'
+        : 'Signature: package is not signed',
+    ),
+  );
 
   const link = el(doc, 'a', info.entryUrl) as HTMLAnchorElement;
   link.href = info.entryUrl;

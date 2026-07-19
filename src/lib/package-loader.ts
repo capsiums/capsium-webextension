@@ -16,19 +16,11 @@ import {
 } from './model';
 import { isTextMime, detectMimeType } from './mime';
 import { verifyChecksums } from './checksums';
+import { verifyPackageSignature } from './signatures';
+import { PackageError } from './errors';
 
-export type PackageErrorCode =
-  'unzip' | 'config' | 'integrity' | 'missing-resource';
-
-export class PackageError extends Error {
-  constructor(
-    public readonly code: PackageErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'PackageError';
-  }
-}
+export type { PackageErrorCode } from './errors';
+export { PackageError } from './errors';
 
 /** One file extracted from the package, kept as raw bytes (binary-safe). */
 export interface ExtractedFile {
@@ -56,6 +48,8 @@ export interface LoadedPackage {
   /** All servable files: manifest resources plus dataset sources, as raw bytes. */
   files: ExtractedFile[];
   checksums: 'verified' | 'absent';
+  /** 'verified' when a declared digital signature checked out (§6a). */
+  signature: 'verified' | 'absent';
   validity: ContentValidity;
 }
 
@@ -65,6 +59,8 @@ export interface LoadedPackage {
  *  - auto-generates manifest.json / routes.json when absent (§3/§4);
  *  - verifies SHA-256 checksums when security.json is present and REJECTS
  *    the package on mismatch (§6);
+ *  - verifies the RSA-SHA256 digital signature when `digitalSignatures`
+ *    is declared, rejecting on mismatch BEFORE install (§6a);
  *  - extracts every servable file as raw bytes (binary-safe).
  */
 export class PackageLoader {
@@ -104,6 +100,7 @@ export class PackageLoader {
       : generateRoutes(manifest, storage);
 
     let checksums: LoadedPackage['checksums'] = 'absent';
+    let signature: LoadedPackage['signature'] = 'absent';
     const securityBytes = entries.get('security.json');
     if (securityBytes) {
       const security = parseSecurity(
@@ -111,6 +108,10 @@ export class PackageLoader {
       );
       await this.verifyIntegrity(entries, security);
       checksums = 'verified';
+      if (security.security.digitalSignatures !== undefined) {
+        await verifyPackageSignature(entries, security);
+        signature = 'verified';
+      }
     }
 
     const files = this.extractFiles(entries, manifest, storage);
@@ -122,6 +123,7 @@ export class PackageLoader {
       storage,
       files,
       checksums,
+      signature,
       validity: {
         package: `${metadata.name}@${metadata.version}`,
         valid: true,

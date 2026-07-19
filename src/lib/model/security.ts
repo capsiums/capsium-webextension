@@ -4,10 +4,12 @@ import { ModelError } from './index';
 /**
  * security.json — ARCHITECTURE.md §6 (generated at pack time).
  *
- * Checksums cover EVERY file in the package except security.json itself.
- * Loaders MUST verify SHA-256 checksums when security.json is present and
- * REJECT the package on mismatch. Digital signatures are a later phase;
- * they are parsed but not verified.
+ * Checksums cover EVERY file in the package except security.json itself
+ * (and signature.sig, which cannot be checksum-covered — the signed payload
+ * is built from the checksum map). Loaders MUST verify SHA-256 checksums
+ * when security.json is present and REJECT the package on mismatch; when
+ * `digitalSignatures` is declared, the RSA-SHA256 signature is verified
+ * with the same reject gate (§6a).
  */
 
 export const securitySchema = z.object({
@@ -19,8 +21,10 @@ export const securitySchema = z.object({
     }),
     digitalSignatures: z
       .looseObject({
-        publicKey: z.string().optional(),
-        signatureFile: z.string().optional(),
+        /** package-relative path of an SPKI "PUBLIC KEY" PEM */
+        publicKey: z.string().min(1),
+        /** package-relative path of the raw signature bytes */
+        signatureFile: z.string().min(1),
       })
       .optional(),
   }),
