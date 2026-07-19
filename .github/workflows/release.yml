@@ -1,0 +1,33 @@
+name: release
+
+on:
+  push:
+    tags: [ v* ]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+    - run: npm ci
+    - run: npm run lint
+    - run: npm run typecheck
+    - run: npm run test
+    - run: npm run build
+    - name: Zip extension bundles
+      run: npm run zip
+    - name: Upload zips to release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: .output/*.zip
+        file_glob: true
+        tag: ${{ github.ref_name }}
+        overwrite: true
+        body: "Capsium Viewer ${{ github.ref_name }} — Chrome (MV3) and Firefox (MV2) bundles"
