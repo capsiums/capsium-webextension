@@ -41,6 +41,8 @@ export interface ServeTarget {
 /**
  * Parse the router hash `#/serve/<capId>/<path>` (the DNR rule substitutes
  * the requested URL path after the capId). Returns null for foreign hashes.
+ * A query string on the original .cap URL is appended after the fragment by
+ * the DNR substitution — it is stripped from the captured path.
  */
 export function parseServeHash(hash: string): ServeTarget | null {
   const rest = hash.startsWith('#') ? hash.slice(1) : hash;
@@ -53,7 +55,10 @@ export function parseServeHash(hash: string): ServeTarget | null {
   }
   const capId = remainder.slice(0, slash);
   if (capId === '') return null;
-  return { capId, path: safeDecode(remainder.slice(slash)) };
+  const rawPath = remainder.slice(slash);
+  const queryAt = rawPath.indexOf('?');
+  const path = queryAt === -1 ? rawPath : rawPath.slice(0, queryAt);
+  return { capId, path: safeDecode(path) };
 }
 
 /** Build the router hash for a serve target (inverse of parseServeHash). */

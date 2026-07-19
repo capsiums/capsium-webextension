@@ -51,7 +51,11 @@ function coreView(): InstalledDependencyView {
       routes: [
         { path: '/app.js', resource: 'content/app.js' },
         { path: '/secret.js', resource: 'content/secret.js' },
-        { path: '/internal.js', resource: 'content/app.js', visibility: 'private' },
+        {
+          path: '/internal.js',
+          resource: 'content/app.js',
+          visibility: 'private',
+        },
       ],
     }),
     storage: null,
@@ -119,9 +123,9 @@ describe('resolveDependencyResource', () => {
       kind: 'private',
       path: 'content/secret.js',
     });
-    expect(
-      resolveDependencyResource(coreView(), 'content/ghost.js').kind,
-    ).toBe('not-found');
+    expect(resolveDependencyResource(coreView(), 'content/ghost.js').kind).toBe(
+      'not-found',
+    );
   });
 
   it('hides private layers from dependents (§5a)', () => {
@@ -168,7 +172,11 @@ describe('composite resolution (§4a)', () => {
     expect(resolveUrlPath(parentView, [], '/vendor/app.js').kind).toBe(
       'not-found',
     );
-    const resolution = resolveUrlPath(parentView, [coreView()], '/vendor/app.js');
+    const resolution = resolveUrlPath(
+      parentView,
+      [coreView()],
+      '/vendor/app.js',
+    );
     expect(resolution).toEqual({
       kind: 'found',
       file: {
@@ -197,9 +205,9 @@ describe('composite resolution (§4a)', () => {
     expect(resolveUrlPath(parentView, [coreView()], '/app.js').kind).toBe(
       'found',
     );
-    expect(
-      resolveUrlPath(parentView, [coreView()], '/internal.js').kind,
-    ).toBe('not-found');
+    expect(resolveUrlPath(parentView, [coreView()], '/internal.js').kind).toBe(
+      'not-found',
+    );
   });
 
   it('honors remap and responseRewrite.body at serve time', () => {
@@ -378,9 +386,7 @@ describe('CapsiumService — composite end to end', () => {
     expect(dnr.rules.size).toBe(0);
     // The dependency's bytes went with its parent.
     expect(fileStore.packages.size).toBe(0);
-    expect(
-      storage.keys().filter((key) => key.includes('.pkg.')),
-    ).toEqual([]);
+    expect(storage.keys().filter((key) => key.includes('.pkg.'))).toEqual([]);
     expect(await new PackageStore(storage, fileStore).listIndex()).toEqual([]);
   });
 });

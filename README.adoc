@@ -38,39 +38,106 @@ reactor.
 ** Layered storage (§5a): when `storage.json` declares `layers`
    (bottom → top), every layer file is stored under its raw path and each
    request resolves the merged view **top → bottom** — first hit wins.
-   `.capsium-tombstones` deletions resolve 404 (no DNR rule is installed),
+   `.capsium-tombstones` deletions resolve 404 (the router renders one),
    `private` layers are hidden from dependent packages, and the manifest /
    routes auto-generate from the merged view.
 ** Composite packages (§4a): the popup lists a package's declared
    `dependencies` and accepts the dependency `.cap` files in the same
    session (the guid must match a declared dependency). An installed
    dependency's `exported` routes/resources serve as a lower read-only
-   layer under the dependent's URL space (its own routes win via a higher
-   DNR priority; `private` routes/resources and `private` layers are never
-   served). Route inheritance attributes are honored: `remap` (matched
-   path), `responseRewrite.body` (baked into the served data: URI), and
-   `responseRewrite.headers` / `responseHeaders` / `requestHeaders`
-   (companion `modifyHeaders` rules — see the header caveat below).
-** Basic auth (§4b): when `authentication.json` enables `basicAuth`, the
-   whole package serves the 401 body ("authentication required") until the
-   popup's credential form verifies against the packaged htpasswd file
-   (bcrypt and apr1-MD5 hashes supported, same verifier as capsium-js).
-   Credentials are asked **once per session**; afterwards the serving
-   layer attaches `Authorization: Basic …` to every request under the
-   package's origin and the tab reopens. OAuth2 is parsed (config model
-   only) — the extension is not a confidential client, so the
-   authorization-code flow is documented as deferred.
+   layer under the dependent's URL space (its own routes win; `private`
+   routes/resources and `private` layers are never served). Route
+   inheritance attributes are honored: `remap` (matched path),
+   `responseRewrite.body` (served as a body override), and
+   `responseRewrite.headers` / `responseHeaders` (applied where blob:
+   documents allow — see *Serving architecture*); `requestHeaders` were
+   inert in the data:-URI core and are no longer emitted as rules.
+** Basic auth (§4b): when `authentication.json` enables `basicAuth`, every
+   package URL resolves `locked` (the router renders the 401 body
+   "authentication required") until the popup's credential form verifies
+   against the packaged htpasswd file (bcrypt and apr1-MD5 hashes
+   supported, same verifier as capsium-js). Credentials are asked **once
+   per session**; afterwards the serving layer attaches
+   `Authorization: Basic …` to every request under the package's origin
+   and the tab reopens. OAuth2 is parsed (config model only) — the
+   extension is not a confidential client, so the authorization-code flow
+   is documented as deferred.
 --
-. Package files are extracted **binary-safe** (raw bytes; uniform base64 in
-   `chrome.storage.local` — PDFs/images are no longer corrupted).
+. Package files are extracted **binary-safe** (raw bytes) and stored in the
+  binary file store — OPFS (Origin Private File System) primarily, the
+  Cache API as fallback. `chrome.storage.local` keeps only the package
+  index and per-package metadata (no more base64 payloads, no more
+  `unlimitedStorage`).
 . HTML files get their relative URLs rewritten against their own in-package
-   directory, pointing at the package's synthetic origin
-   `https://<capId>.cap`.
-. One `declarativeNetRequest` session rule per route redirects
-   `https://<capId>.cap<path>` to the file's data: URI. Rule IDs are
-   namespaced per package and removed when the package expires (30 min).
-. A new tab opens at `https://<capId>.cap/`. The popup shows package info
-  plus a mini content-validity view (§7).
+  directory, pointing at the package's synthetic origin
+  `https://<capId>.cap`.
+. ONE `declarativeNetRequest` session rule per package redirects every
+  `https://<capId>.cap<path>` URL to the extension's router page (the path
+  travels in the URL fragment). Rule IDs are namespaced per package and
+  removed when the package expires (30 min).
+. A new tab opens at `https://<capId>.cap/`, which lands on the router
+  page. The popup shows package info plus a mini content-validity view
+  (§7).
+
+== Serving architecture
+
+The data:-URI core (base64 in `chrome.storage.local` + one DNR rule per
+route redirecting to a `data:` URI) is replaced by two pieces:
+
+[source]
+----
+https://<capId>.cap<path>
+        │  (1) ONE DNR session rule per package (regex substitution:
+        │      path -> URL fragment)
+        ▼
+chrome-extension://<id>/router.html#/serve/<capId>/<path>
+        │  (2) resolve message -> background worker:
+        │      route match, §5a layers/tombstones, §4a dependency refs,
+        │      §4b basic-auth gate  =>  {store, fileCapId, path, MIME,
+        │                              bodyOverride?, responseHeaders?}
+        │  (3) bytes read from the file store (OPFS / Cache API)
+        ▼
+sandbox.html  (opaque origin, no extension APIs)
+        │  (4) HTML: subresource refs -> blob: URLs minted from stored
+        │      bytes ("fetch proxy"), exact MIME via Blob type, then
+        │      document.written into the sandbox page
+        │      non-HTML: navigated to a typed blob: URL
+        ▼
+packaged document (scripts run; fetch()/navigations to the .cap origin
+are bridged back through the router by an injected shim)
+----
+
+Storage:: **OPFS is the primary store** (chosen deliberately over the Cache
+API): it persists raw bytes without request/response or serialization
+overhead, handles large package trees cheaply and drops a whole package
+with one recursive `removeEntry`. The async `FileSystemFileHandle` API is
+used (sync access handles exist only in dedicated workers, never in a
+service worker). **Fallback:** when OPFS is missing or the probe write
+fails (older engines, quota pressure), the Cache API
+(`caches.open('capsium')`, Response bodies keyed by synthetic
+never-fetched URLs) is used instead; the resolution tells the router
+which backend holds the bytes. Content types are not stored in either
+backend — they live in the `chrome.storage.local` metadata
+(`path -> contentType`) and travel with resolutions.
+Serving:: ONE DNR redirect rule per package (down from one per route) —
+the ~5k-rule budget pressure, per-route rule bookkeeping and the base64
+URL-size ceiling are gone. Route matching moved to serve time
+(`lib/resolver.ts`), which makes dependency installs (§4a) and basic-auth
+unlocks (§4b) take effect without any rule rebuild.
+Permissions:: `unlimitedStorage` was **removed** (index + metadata fit the
+default `chrome.storage.local` quota easily; bytes live in OPFS/Cache).
+`router.html` is web-accessible to `https://*.cap/*` (required for DNR
+redirects to extension pages); the Chrome build declares `sandbox.html`
+as a sandbox page.
+Response headers:: the Blob type now carries the exact `Content-Type` of
+every served file (the data:-URI core embedded it in the URI; both beat
+DNR, which cannot set response headers on redirects). A §4a
+`Content-Security-Policy` response header is applied via a `<meta>` tag;
+other custom response headers cannot be attached to blob: documents and
+are documented as dropped (they were dropped by the data:-URI core too —
+DNR cannot apply response headers to data: responses). The §4b
+`Authorization: Basic` request-header rule is still emitted
+package-wide after authentication.
 
 == Development
 
@@ -108,35 +175,66 @@ npm run zip         # distributable zips in .output/
   gates (WebCrypto).
 * `layers.ts` — §5a overlay resolution (top → bottom, tombstones,
   exported/private viewpoints).
-* `composite.ts` / `serving.ts` — §4a dependency refs and composite rule
-  specs (own routes above inherited dependency routes).
+* `composite.ts` / `resolver.ts` — §4a dependency refs and serve-time
+  route resolution (own routes above inherited dependency routes; layered
+  tombstones; body/header overrides).
 * `auth/` — §4b htpasswd verification (bcrypt via bcryptjs, apr1 via the
   bundled RFC 1321 MD5, ported from capsium-js swsws).
-* `store.ts` — transactional `chrome.storage.local` persistence (rollback on
-  partial failure).
-* `dnr.ts` — per-package namespaced DNR rule lifecycle.
+* `store.ts` — transactional persistence: bytes to the file store,
+  index + metadata in `chrome.storage.local` (rollback on partial
+  failure).
+* `file-store.ts` — the binary file store: OPFS backend (primary), Cache
+  API backend (fallback), probe-based selection.
+* `dnr.ts` — per-package namespaced DNR rule lifecycle (ONE router
+  redirect rule + the §4b Authorization rule).
+* `router-page.ts` / `sandbox-page.ts` — the serving pages: resolution
+  orchestration, blob: fetch-proxy DOM pass, blob URL lifecycle, the
+  injected fetch/navigation shim.
 * `offscreen-rewriter.ts` — single persistent offscreen document with
   request correlation (Chrome); direct `DOMParser` in Firefox event pages.
-* `background-service.ts` — orchestration (load → rewrite → store → rules →
-  open tab; expiry sweep; session-rule recovery after browser restart).
+* `background-service.ts` — orchestration (load → rewrite → store → rule →
+  open tab; serve-time resolution for the router; expiry sweep;
+  session-rule recovery after browser restart).
 * `popup-view.ts` — DOM-building rendering (no `innerHTML` with package
   data).
 
 `src/entrypoints/` holds the thin WXT entrypoints (background service
-worker, popup, offscreen document) that wire the DI ports to
-`webextension-polyfill` / `chrome.*`.
+worker, popup, offscreen document, router page, sandbox page) that wire
+the DI ports to `webextension-polyfill` / `chrome.*`.
 
 == Known limitations / future work
 
-* Serving is via DNR redirects to base64 data: URIs (kept from the original
-  design). Very large resources inflate by ~33% and depend on URL-length
-  limits. An OPFS / Cache-API-based serving layer (replacing data: URIs) is
-  explicitly deferred. Tombstoned/absent package URLs have no rule, so the
-  browser shows its generic unreachable-host page rather than a styled 404.
-  Header rules (`headers`, `responseHeaders`, `responseRewrite.headers`)
-  are emitted as companion `modifyHeaders` rules, but DNR cannot apply
-  response headers to `data:` responses — they take effect only once
-  serving moves to OPFS/Cache API.
+* Serving is via the router + sandbox pages (see *Serving architecture*).
+  The data:-URI core is gone; the trade-offs of the new core:
+** blob: documents cannot carry arbitrary response headers — §4a
+   `responseHeaders` / `responseRewrite.headers` are applied only for
+   `Content-Security-Policy` (via `<meta>`); other response headers are
+   dropped (they were inert in the data:-URI core too). `requestHeaders`
+   companions are no longer emitted (they never had an observable effect).
+** Packaged `fetch()` to the package origin is bridged through the router
+   (dataset routes work from JS); packaged `XMLHttpRequest` to package
+   URLs is NOT bridged and returns the router page — use `fetch()`.
+** In-package link clicks and `window.open()` are relayed through the
+   injected shim (a blob:-origin frame cannot follow the DNR redirect to
+   an extension page). `<iframe src>` pointing at a package URL does not
+   load (the data:-URI core couldn't frame data: documents either).
+** ES modules with relative imports do not resolve from blob:-origin
+   documents (same class of limitation as data: documents); classic
+   scripts work. Inline `style` attributes / CSS `url()` references keep
+   their pre-existing behavior (relative references were unresolvable in
+   the data:-URI core too).
+** CSP nuances: on Chrome the sandbox page's CSP allows `'unsafe-inline'`
+   + `blob:` scripts (sandbox pages may relax it; extension pages may
+   not). Firefox has no manifest sandbox pages (the iframe `sandbox`
+   attribute provides the opaque origin) and its MV2 CSP validation
+   forbids `'unsafe-inline'` — packaged EXTERNAL (blob:) scripts run on
+   Firefox, packaged INLINE scripts are blocked there.
+** Firefox OPFS notes: the async OPFS API (`navigator.storage.getDirectory()`)
+   works in Firefox ≥ 111 window/worker contexts, which covers the MV2
+   event page used here; if it is missing or fails, the Cache API
+   fallback engages automatically (probe at service-worker startup).
+** Unknown package URLs now render the router's styled 404 instead of the
+   browser's generic unreachable-host page (a deliberate improvement).
 * Dependency version ranges are displayed but not semver-matched (the user
   picks the exact .cap files; guid identity is enforced). Transitive
   `capsium://` references inside a dependency's routes are not served.
@@ -153,8 +251,6 @@ worker, popup, offscreen document) that wire the DI ports to
   read-only; §5a write semantics deferred).
 * Firefox target builds (MV2 event pages) but is best-effort; Chrome is the
   primary target.
-* `unlimitedStorage` is kept because packages are stored base64-encoded in
-  `chrome.storage.local` (10 MB default quota is too small).
 
 == License
 

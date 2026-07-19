@@ -40,7 +40,9 @@ export function capOriginOf(capId: string): string {
 const ABSOLUTE_URL = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
 /** Subresource references rewritten to blob: URLs (NOT <a>/iframe — those navigate). */
-const ASSET_TARGETS: ReadonlyArray<readonly [selector: string, attribute: string]> = [
+const ASSET_TARGETS: ReadonlyArray<
+  readonly [selector: string, attribute: string]
+> = [
   ['link[href]', 'href'],
   ['script[src]', 'src'],
   ['img[src]', 'src'],
@@ -131,7 +133,8 @@ export function substituteAssetUrls(
         const rebuilt = parseSrcset(value)
           .map(([url, descriptor]) => {
             const resolved = resolveAssetRef(url, capOrigin, baseUrl);
-            const blobUrl = resolved === null ? null : replacements.get(resolved);
+            const blobUrl =
+              resolved === null ? null : replacements.get(resolved);
             if (blobUrl === null || blobUrl === undefined) {
               return descriptor === '' ? url : `${url} ${descriptor}`;
             }
@@ -325,9 +328,7 @@ export class SandboxRenderer {
         typeof message.body === 'string'
           ? new TextEncoder().encode(message.body)
           : message.body;
-      this.ports.renderBlobUrl(
-        this.registry.create(body, message.contentType),
-      );
+      this.ports.renderBlobUrl(this.registry.create(body, message.contentType));
       return;
     }
 

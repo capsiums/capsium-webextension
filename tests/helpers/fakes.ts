@@ -179,10 +179,7 @@ class FakeOpfsFileHandle implements OpfsFileHandleLike {
     if (this.bytes === null) return Promise.reject(new Error('NotFoundError'));
     const bytes = this.bytes;
     return Promise.resolve({
-      arrayBuffer: () =>
-        Promise.resolve(
-          bytes.slice().buffer as ArrayBuffer,
-        ),
+      arrayBuffer: () => Promise.resolve(bytes.slice().buffer as ArrayBuffer),
     });
   }
 }

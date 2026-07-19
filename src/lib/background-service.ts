@@ -1,4 +1,8 @@
-import { PackageLoader, PackageError, type LoadedPackage } from './package-loader';
+import {
+  PackageLoader,
+  PackageError,
+  type LoadedPackage,
+} from './package-loader';
 import {
   PackageStore,
   type PreparedFile,
@@ -471,9 +475,7 @@ export class CapsiumService {
     return Promise.all(
       Object.entries(info.metadata.dependencies).map(async ([guid, range]) => {
         const depCapId = info.dependencies?.[guid];
-        const depInfo = depCapId
-          ? await this.store.getInfo(depCapId)
-          : null;
+        const depInfo = depCapId ? await this.store.getInfo(depCapId) : null;
         return depInfo
           ? {
               guid,

@@ -23,7 +23,9 @@ function view(partial: Partial<PackageServingView> = {}): PackageServingView {
   };
 }
 
-function depView(partial: Partial<InstalledDependencyView> = {}): InstalledDependencyView {
+function depView(
+  partial: Partial<InstalledDependencyView> = {},
+): InstalledDependencyView {
   return {
     ...view({ capId: DEP_CAP }),
     guid: DEP_GUID,
@@ -40,7 +42,11 @@ describe('resolveUrlPath — own routes', () => {
         { path: '/', resource: 'content/index.html' },
         { path: '/api/v1/data/animals', dataset: 'animals' },
         { path: '/compute', method: 'POST', handler: 'h.js' },
-        { path: '/old.js', resource: 'content/app.js', remap: '/vendor/app.js' },
+        {
+          path: '/old.js',
+          resource: 'content/app.js',
+          remap: '/vendor/app.js',
+        },
       ],
     }),
     storage: parseStorage({
@@ -56,7 +62,11 @@ describe('resolveUrlPath — own routes', () => {
   it('resolves static and dataset routes, byte-free', () => {
     expect(resolveUrlPath(pkg, [], '/')).toEqual({
       kind: 'found',
-      file: { capId: CAP, path: 'content/index.html', contentType: 'text/html' },
+      file: {
+        capId: CAP,
+        path: 'content/index.html',
+        contentType: 'text/html',
+      },
     });
     expect(resolveUrlPath(pkg, [], '/api/v1/data/animals')).toEqual({
       kind: 'found',
@@ -94,7 +104,10 @@ describe('resolveUrlPath — inheritance attributes (§4a)', () => {
           {
             path: '/wrapped.js',
             resource: 'content/app.js',
-            responseRewrite: { body: '// wrapped', headers: { 'X-R': '1', 'X-B': 'r' } },
+            responseRewrite: {
+              body: '// wrapped',
+              headers: { 'X-R': '1', 'X-B': 'r' },
+            },
             responseHeaders: { 'X-B': '2' },
           },
         ],
@@ -165,7 +178,11 @@ describe('resolveUrlPath — composite (§4a)', () => {
       routes: [
         { path: '/app.js', resource: 'content/app.js' },
         { path: '/secret.js', resource: 'content/secret.js' },
-        { path: '/internal.js', resource: 'content/app.js', visibility: 'private' },
+        {
+          path: '/internal.js',
+          resource: 'content/app.js',
+          visibility: 'private',
+        },
       ],
     }),
     fileTypes: {
@@ -181,7 +198,10 @@ describe('resolveUrlPath — composite (§4a)', () => {
         { path: '/', resource: 'content/index.html' },
         { path: '/vendor/app.js', resource: `${DEP_GUID}/content/app.js` },
         { path: '/secret.js', resource: `${DEP_GUID}/content/secret.js` },
-        { path: '/missing-dep.js', resource: 'capsium://example.com/other/x.js' },
+        {
+          path: '/missing-dep.js',
+          resource: 'capsium://example.com/other/x.js',
+        },
       ],
     }),
     fileTypes: { 'content/index.html': 'text/html' },
@@ -228,7 +248,11 @@ describe('resolveUrlPath — composite (§4a)', () => {
     });
     expect(resolveUrlPath(parentWithClash, [dep], '/app.js')).toEqual({
       kind: 'found',
-      file: { capId: CAP, path: 'content/own.js', contentType: 'text/javascript' },
+      file: {
+        capId: CAP,
+        path: 'content/own.js',
+        contentType: 'text/javascript',
+      },
     });
   });
 });

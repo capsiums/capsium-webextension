@@ -67,9 +67,7 @@ describe('CapsiumService.openFromDataUri', () => {
     ).toEqual([capId]);
 
     // Bytes landed in the file store; chrome.storage.local holds no payloads.
-    expect(
-      storage.keys().filter((key) => key.includes('.file.')),
-    ).toEqual([]);
+    expect(storage.keys().filter((key) => key.includes('.file.'))).toEqual([]);
     expect(await fileStore.get(capId, 'content/example.css')).toEqual(
       enc.encode('body { color: red; }'),
     );
@@ -82,9 +80,9 @@ describe('CapsiumService.openFromDataUri', () => {
     if (!first.ok || !second.ok) throw new Error('load failed');
     expect(first.info.capId).not.toBe(second.info.capId);
     expect(dnr.rules.size).toBe(2);
-    expect(
-      await new PackageStore(storage, fileStore).listIndex(),
-    ).toHaveLength(2);
+    expect(await new PackageStore(storage, fileStore).listIndex()).toHaveLength(
+      2,
+    );
   });
 
   it('rolls back storage when rule installation fails', async () => {

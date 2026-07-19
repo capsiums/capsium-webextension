@@ -15,10 +15,7 @@ import { PackageStore } from '../src/lib/store';
 import { DnrRuleManager } from '../src/lib/dnr';
 import { encodeBase64 } from '../src/lib/base64';
 import { generatedFixtureBytes } from './helpers/fixtures';
-import {
-  LAYERED_CAP,
-  LAYERED_UPDATED_INDEX,
-} from './fixtures/global-setup';
+import { LAYERED_CAP, LAYERED_UPDATED_INDEX } from './fixtures/global-setup';
 import {
   FakeDnr,
   FakeFileStore,
@@ -62,11 +59,7 @@ describe('resolveLayeredPath', () => {
   const view = entriesFileView(demoEntries());
 
   it('resolves top → bottom, first hit wins', () => {
-    const res = resolveLayeredPath(
-      view,
-      LAYERED_STORAGE,
-      'content/index.html',
-    );
+    const res = resolveLayeredPath(view, LAYERED_STORAGE, 'content/index.html');
     expect(res).toMatchObject({
       kind: 'found',
       path: 'updates/content/index.html',
@@ -99,14 +92,22 @@ describe('resolveLayeredPath', () => {
     });
     // tombstones of the hidden layer do not apply either
     expect(
-      resolveLayeredPath(view, LAYERED_STORAGE, 'content/gone.html', 'dependent')
-        .kind,
+      resolveLayeredPath(
+        view,
+        LAYERED_STORAGE,
+        'content/gone.html',
+        'dependent',
+      ).kind,
     ).toBe('found');
   });
 
   it('treats an unconfigured package as a single implicit root layer', () => {
     const files = new Map([['content/x.html', enc.encode('x')]]);
-    const res = resolveLayeredPath(entriesFileView(files), null, 'content/x.html');
+    const res = resolveLayeredPath(
+      entriesFileView(files),
+      null,
+      'content/x.html',
+    );
     expect(res).toMatchObject({ kind: 'found', path: 'content/x.html' });
   });
 
@@ -311,10 +312,7 @@ describe('CapsiumService — layered package end to end', () => {
       expect(rebuiltIndex.filePath).toBe('updates/content/index.html');
       expect(
         dec.decode(
-          (await fileStore.get(
-            rebuiltIndex.fileCapId,
-            rebuiltIndex.filePath,
-          ))!,
+          (await fileStore.get(rebuiltIndex.fileCapId, rebuiltIndex.filePath))!,
         ),
       ).toContain(LAYERED_UPDATED_INDEX);
     }

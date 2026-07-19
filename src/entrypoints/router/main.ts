@@ -129,5 +129,8 @@ window.addEventListener('message', (event) => {
   void handleSandboxMessage(ports, ROUTER_BASE_URL, event.data);
 });
 
-window.addEventListener('hashchange', () => void runRouter(ports, location.hash));
+window.addEventListener(
+  'hashchange',
+  () => void runRouter(ports, location.hash),
+);
 void runRouter(ports, location.hash);

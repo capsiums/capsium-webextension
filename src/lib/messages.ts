@@ -198,7 +198,9 @@ export function isResolveResponse(
 ): message is ResolveResponse {
   if (typeof message !== 'object' || message === null) return false;
   const record = message as Record<string, unknown>;
-  return record['type'] === RESOLVE_RESPONSE_TYPE && Array.isArray(record['results']);
+  return (
+    record['type'] === RESOLVE_RESPONSE_TYPE && Array.isArray(record['results'])
+  );
 }
 
 /** One route as shown in the popup. */

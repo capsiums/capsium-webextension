@@ -7,10 +7,7 @@ import {
 } from '../../lib/messages';
 
 let requestSeq = 0;
-const pendingAssets = new Map<
-  string,
-  (assets: ResolvedAssetBody[]) => void
->();
+const pendingAssets = new Map<string, (assets: ResolvedAssetBody[]) => void>();
 
 const renderer = new SandboxRenderer({
   requestAssets: (capId, urls) =>

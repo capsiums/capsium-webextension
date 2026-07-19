@@ -41,8 +41,7 @@ export interface PackageServingView {
 
 /** An installed dependency, resolvable from the dependent viewpoint (§4a). */
 export interface InstalledDependencyView
-  extends PackageServingView,
-    DependencyServingView {}
+  extends PackageServingView, DependencyServingView {}
 
 /** The stored file serving one URL, plus serve-time-only overrides. */
 export interface ResolvedFile {
@@ -96,7 +95,10 @@ function found(file: ResolvedFile): Resolution {
 }
 
 /** Apply §4a route-inheritance attributes to a resolved file. */
-function applyInheritance(route: StaticRoute, file: ResolvedFile): ResolvedFile {
+function applyInheritance(
+  route: StaticRoute,
+  file: ResolvedFile,
+): ResolvedFile {
   const bodyOverride = route.responseRewrite?.body;
   // responseHeaders apply only when absent; responseRewrite.headers override.
   const responseHeaders = {

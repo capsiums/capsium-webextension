@@ -14,7 +14,7 @@ const SANDBOX_CSP = [
   "img-src 'self' blob: data: https: http:",
   "media-src 'self' blob: data: https: http:",
   "font-src 'self' blob: data:",
-  "connect-src https: http:",
+  'connect-src https: http:',
   "child-src 'self' blob:",
 ].join('; ');
 
@@ -71,12 +71,7 @@ export default defineConfig({
         sandbox: SANDBOX_CSP,
       },
       sandbox: { pages: ['sandbox.html'] },
-      permissions: [
-        'storage',
-        'alarms',
-        'declarativeNetRequest',
-        'offscreen',
-      ],
+      permissions: ['storage', 'alarms', 'declarativeNetRequest', 'offscreen'],
       host_permissions: ['https://*.cap/*'],
       // DNR redirects to extension resources are followed only when the
       // resource is web-accessible to the request's origin (the .cap host).
@@ -86,4 +81,3 @@ export default defineConfig({
     };
   },
 });
-
