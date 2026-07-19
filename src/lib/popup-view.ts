@@ -72,9 +72,17 @@ export function renderPrivateKeyPrompt(
 export function renderPackageInfo(
   container: HTMLElement,
   info: PackageViewInfo,
+  /** Optional problem to surface above the info (e.g. a failed dep add). */
+  notice?: string,
 ): void {
   const doc = container.ownerDocument;
   const box = el(doc, 'div');
+
+  if (notice !== undefined) {
+    const alert = el(doc, 'p', notice);
+    alert.className = 'error';
+    box.append(alert);
+  }
 
   box.append(el(doc, 'h2', 'Package loaded'));
 
@@ -130,6 +138,30 @@ export function renderPackageInfo(
     list.append(el(doc, 'li', `${route.path} → ${route.target}`));
   }
   box.append(list);
+
+  // Composite packages (§4a): declared dependencies with install status,
+  // plus a file input to add the missing ones in this session.
+  if (info.dependencies.length > 0) {
+    box.append(el(doc, 'h3', `Dependencies (${info.dependencies.length})`));
+    const deps = el(doc, 'ul');
+    for (const dep of info.dependencies) {
+      const status =
+        dep.status === 'installed'
+          ? `installed (${dep.name ?? '—'}@${dep.version ?? '—'})`
+          : 'missing';
+      deps.append(el(doc, 'li', `${dep.guid} ${dep.range} — ${status}`));
+    }
+    box.append(deps);
+    if (info.dependencies.some((dep) => dep.status === 'missing')) {
+      const label = el(doc, 'label', 'Add dependency .cap: ');
+      const depInput = el(doc, 'input') as HTMLInputElement;
+      depInput.type = 'file';
+      depInput.id = 'depFileInput';
+      depInput.accept = '.cap,.zip';
+      label.append(depInput);
+      box.append(label);
+    }
+  }
 
   container.replaceChildren(box);
 }

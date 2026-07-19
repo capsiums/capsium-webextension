@@ -47,7 +47,10 @@ describe('buildRules', () => {
 
   it('redirects to the data: URI', () => {
     const [root] = buildRules(CAP_A, specs('QQ'), 0);
-    expect(root?.action.redirect.url).toBe('data:text/html;base64,QQ0');
+    expect(root?.action.type).toBe('redirect');
+    if (root?.action.type === 'redirect') {
+      expect(root.action.redirect.url).toBe('data:text/html;base64,QQ0');
+    }
   });
 });
 
@@ -77,9 +80,11 @@ describe('DnrRuleManager', () => {
     const second = await manager.installPackageRules(CAP_A, specs('eQ'));
     expect(second).toEqual(first); // same deterministic block
     expect(dnr.rules.size).toBe(first.length);
-    expect(dnr.rules.get(first[0] ?? 0)?.action.redirect.url).toBe(
-      'data:text/html;base64,eQ0',
-    );
+    const action = dnr.rules.get(first[0] ?? 0)?.action;
+    expect(action?.type).toBe('redirect');
+    if (action?.type === 'redirect') {
+      expect(action.redirect.url).toBe('data:text/html;base64,eQ0');
+    }
   });
 
   it('moves to a fresh block on collision with another installed package', async () => {

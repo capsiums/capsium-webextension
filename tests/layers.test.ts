@@ -261,12 +261,15 @@ describe('CapsiumService — layered package end to end', () => {
     expect(response.ok).toBe(true);
     if (!response.ok) return;
 
-    const indexRule = [...dnr.rules.values()].find((rule) =>
-      rule.condition.regexFilter.includes('index\\.html'),
+    const indexRule = [...dnr.rules.values()].find(
+      (rule) =>
+        rule.action.type === 'redirect' &&
+        rule.condition.regexFilter.includes('index\\.html'),
     );
     expect(indexRule).toBeDefined();
+    if (indexRule?.action.type !== 'redirect') throw new Error('unreachable');
     const served = dec.decode(
-      decodeBase64(indexRule!.action.redirect.url.split(',')[1] ?? ''),
+      decodeBase64(indexRule.action.redirect.url.split(',')[1] ?? ''),
     );
     expect(served).toContain(LAYERED_UPDATED_INDEX);
 
@@ -280,12 +283,15 @@ describe('CapsiumService — layered package end to end', () => {
     // Session rules vanish on restart; rebuild must reuse stored tombstones.
     dnr.clear();
     await service.onStartup();
-    const rebuilt = [...dnr.rules.values()].find((rule) =>
-      rule.condition.regexFilter.includes('index\\.html'),
+    const rebuilt = [...dnr.rules.values()].find(
+      (rule) =>
+        rule.action.type === 'redirect' &&
+        rule.condition.regexFilter.includes('index\\.html'),
     );
     expect(rebuilt).toBeDefined();
+    if (rebuilt?.action.type !== 'redirect') throw new Error('unreachable');
     expect(
-      dec.decode(decodeBase64(rebuilt!.action.redirect.url.split(',')[1] ?? '')),
+      dec.decode(decodeBase64(rebuilt.action.redirect.url.split(',')[1] ?? '')),
     ).toContain(LAYERED_UPDATED_INDEX);
   });
 });

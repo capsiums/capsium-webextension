@@ -30,10 +30,16 @@ export const RULE_RESOURCE_TYPES = [
   'other',
 ] as const;
 
-/** One served route: package URL path -> data: URI target. */
+/** One served route: package URL path -> data: URI target (+ optional headers). */
 export interface RuleSpec {
   path: string;
   dataUri: string;
+  /** DNR priority (higher wins when several rules match); default 1. */
+  priority?: number;
+  /** Request headers attached via a companion modifyHeaders rule (§4a). */
+  requestHeaders?: Record<string, string>;
+  /** Response headers attached via a companion modifyHeaders rule (§4a). */
+  responseHeaders?: Record<string, string>;
 }
 
 /** 32-bit FNV-1a — stable across sessions, good enough for block placement. */
@@ -59,28 +65,60 @@ export function escapeRegex(text: string): string {
 /**
  * Build the session rules for a package. The regexFilter is fully anchored,
  * so `/index` can never shadow `/index.html` (the original substring
- * urlFilter over-matched).
+ * urlFilter over-matched). Specs carrying headers (§4a route inheritance)
+ * additionally emit a companion modifyHeaders rule.
  */
 export function buildRules(
   capId: string,
   specs: RuleSpec[],
   salt = 0,
 ): DnrRule[] {
-  if (specs.length > RULE_BLOCK_SIZE) {
-    throw new Error(
-      `Package has ${specs.length} routes; the maximum is ${RULE_BLOCK_SIZE}`,
-    );
-  }
-  const start = ruleBlockStart(capId, salt);
-  return specs.map((spec, index) => ({
-    id: start + index,
-    priority: 1,
-    action: { type: 'redirect', redirect: { url: spec.dataUri } },
-    condition: {
+  const rules: DnrRule[] = [];
+  let nextId = ruleBlockStart(capId, salt);
+  for (const spec of specs) {
+    const condition = {
       regexFilter: `^https://${escapeRegex(capId)}\\.cap${escapeRegex(spec.path)}(\\?.*)?$`,
       resourceTypes: [...RULE_RESOURCE_TYPES],
-    },
-  }));
+    };
+    rules.push({
+      id: nextId,
+      priority: spec.priority ?? 1,
+      action: { type: 'redirect', redirect: { url: spec.dataUri } },
+      condition,
+    });
+    nextId += 1;
+    if (spec.requestHeaders !== undefined || spec.responseHeaders !== undefined) {
+      rules.push({
+        id: nextId,
+        priority: spec.priority ?? 1,
+        action: {
+          type: 'modifyHeaders',
+          ...(spec.requestHeaders === undefined
+            ? {}
+            : {
+                requestHeaders: Object.entries(spec.requestHeaders).map(
+                  ([header, value]) => ({ header, operation: 'set' as const, value }),
+                ),
+              }),
+          ...(spec.responseHeaders === undefined
+            ? {}
+            : {
+                responseHeaders: Object.entries(spec.responseHeaders).map(
+                  ([header, value]) => ({ header, operation: 'set' as const, value }),
+                ),
+              }),
+        },
+        condition,
+      });
+      nextId += 1;
+    }
+  }
+  if (rules.length > RULE_BLOCK_SIZE) {
+    throw new Error(
+      `Package needs ${rules.length} rules; the maximum is ${RULE_BLOCK_SIZE}`,
+    );
+  }
+  return rules;
 }
 
 export class DnrRuleManager {

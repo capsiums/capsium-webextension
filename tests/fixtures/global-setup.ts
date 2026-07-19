@@ -21,6 +21,11 @@
  *    updates (private, writable) layers; updates overrides index.html and
  *    tombstones content/gone.html; manifest/routes auto-generated from the
  *    merged view.
+ *  - composite-parent-1.0.0.cap / composite-core-1.0.0.cap: §4a composite
+ *    pair — the parent declares `capsium://example.com/core` and references
+ *    its resources (exported app.js, private secret.js, responseRewrite
+ *    route); the core package gates secret.js (manifest-private) and
+ *    internal.js (route-private).
  * The signing/encryption private keys are written next to the fixtures
  * (*.private.pem) for cross-implementation checks.
  */
@@ -49,6 +54,12 @@ export const LAYERED_CAP = 'layered-demo-1.0.0.cap';
 /** Markers distinguishing the base vs overriding layer of LAYERED_CAP. */
 export const LAYERED_BASE_INDEX = 'BASE layer index';
 export const LAYERED_UPDATED_INDEX = 'UPDATES layer index (overrides)';
+
+export const COMPOSITE_PARENT_CAP = 'composite-parent-1.0.0.cap';
+export const COMPOSITE_CORE_CAP = 'composite-core-1.0.0.cap';
+export const CORE_GUID = 'capsium://example.com/core';
+export const CORE_APP_JS = 'export const core = 42;';
+export const REWRITTEN_BODY = '// wrapped by parent';
 
 /** 1x1 PNG; tests assert byte-identical round-trip of these exact bytes. */
 export const PIXEL_PNG_BASE64 =
@@ -296,6 +307,115 @@ export default function setup(): void {
     zipSync({
       ...layeredFiles,
       'security.json': securityJsonBytes(checksumsOf(layeredFiles)),
+    }),
+  );
+
+  // Composite (§4a): the parent declares a dependency on CORE_GUID and its
+  // routes reference capsium:// resources (one exported, one private) plus
+  // a responseRewrite route; the core package exports app.js/page.html but
+  // keeps secret.js private (manifest) and internal.js private (route).
+  const enc3 = new TextEncoder();
+  const parentFiles: Record<string, Uint8Array> = {
+    'metadata.json': enc3.encode(
+      JSON.stringify({
+        name: 'composite-parent',
+        version: '1.0.0',
+        description: 'Composite parent demo package',
+        guid: 'https://github.com/capsiums/composite-parent',
+        dependencies: { [CORE_GUID]: '>=1.0.0' },
+      }),
+    ),
+    'routes.json': enc3.encode(
+      JSON.stringify({
+        routes: [
+          { path: '/', resource: 'content/index.html' },
+          { path: '/index.html', resource: 'content/index.html' },
+          {
+            path: '/vendor/core/app.js',
+            resource: `${CORE_GUID}/content/app.js`,
+          },
+          {
+            path: '/secret.js',
+            resource: `${CORE_GUID}/content/secret.js`,
+          },
+          {
+            path: '/wrapped.js',
+            resource: `${CORE_GUID}/content/app.js`,
+            responseRewrite: {
+              body: REWRITTEN_BODY,
+              headers: { 'X-Rewritten': 'yes' },
+            },
+            requestHeaders: { 'X-Requested-With': 'capsium-viewer' },
+          },
+        ],
+      }),
+    ),
+    'content/index.html': enc3.encode(
+      '<!doctype html><html><body>composite parent' +
+        '<script src="/vendor/core/app.js"></script></body></html>',
+    ),
+  };
+  writeFileSync(
+    fileURLToPath(
+      new URL(`./generated/${COMPOSITE_PARENT_CAP}`, import.meta.url),
+    ),
+    zipSync({
+      ...parentFiles,
+      'security.json': securityJsonBytes(checksumsOf(parentFiles)),
+    }),
+  );
+
+  const coreFiles: Record<string, Uint8Array> = {
+    'metadata.json': enc3.encode(
+      JSON.stringify({
+        name: 'composite-core',
+        version: '1.0.0',
+        description: 'Composite dependency demo package',
+        guid: CORE_GUID,
+      }),
+    ),
+    'manifest.json': enc3.encode(
+      JSON.stringify({
+        resources: {
+          'content/app.js': {
+            type: 'text/javascript',
+            visibility: 'exported',
+          },
+          'content/secret.js': {
+            type: 'text/javascript',
+            visibility: 'private',
+          },
+          'content/page.html': { type: 'text/html' },
+        },
+      }),
+    ),
+    'routes.json': enc3.encode(
+      JSON.stringify({
+        routes: [
+          { path: '/app.js', resource: 'content/app.js' },
+          { path: '/secret.js', resource: 'content/secret.js' },
+          { path: '/page.html', resource: 'content/page.html' },
+          {
+            path: '/internal.js',
+            resource: 'content/app.js',
+            visibility: 'private',
+          },
+        ],
+      }),
+    ),
+    'content/app.js': enc3.encode(CORE_APP_JS),
+    'content/secret.js': enc3.encode('export const secret = "nope";'),
+    'content/page.html': enc3.encode(
+      '<!doctype html><html><body>core page</body></html>',
+    ),
+  };
+  writeFileSync(
+    fileURLToPath(
+      new URL(`./generated/${COMPOSITE_CORE_CAP}`, import.meta.url),
+    ),
+    zipSync({
+      ...coreFiles,
+      'security.json': securityJsonBytes(checksumsOf(coreFiles)),
     }),
   );
 }

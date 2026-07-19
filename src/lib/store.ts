@@ -1,5 +1,5 @@
 import type { StoragePort } from './ports';
-import type { Metadata, RoutesFile, StorageFile } from './model';
+import type { Manifest, Metadata, RoutesFile, StorageFile } from './model';
 import type { ContentValidity } from './package-loader';
 
 export const INDEX_KEY = 'capsium.index';
@@ -19,14 +19,21 @@ export interface StoredFile {
 
 export interface StoredPackageInfo {
   metadata: Metadata;
+  /** Persisted for dependent-view (§4a) visibility checks at rebuild time. */
+  manifest?: Manifest;
   routes: RoutesFile;
   storage: StorageFile | null;
   /** Package-relative paths of the stored files. */
   files: string[];
   validity: ContentValidity;
   checksums: 'verified' | 'absent';
+  signature?: 'verified' | 'absent';
   /** Parsed layer tombstones, layer directory -> deleted merged paths (§5a). */
   tombstones?: Record<string, string[]>;
+  /** Composite (§4a): dependency guid -> installed dependency capId. */
+  dependencies?: Record<string, string>;
+  /** Set when this package is installed as a dependency of another. */
+  dependencyOf?: { parent: string; guid: string };
 }
 
 export interface PreparedFile {
@@ -137,6 +144,11 @@ export class PackageStore {
     const raw = data[PackageStore.infoKey(capId)];
     if (typeof raw !== 'object' || raw === null) return null;
     return raw as StoredPackageInfo;
+  }
+
+  /** Overwrite the stored package info (e.g. after a dependency was added). */
+  async updateInfo(capId: string, info: StoredPackageInfo): Promise<void> {
+    await this.storage.set({ [PackageStore.infoKey(capId)]: info });
   }
 
   async getFile(capId: string, path: string): Promise<StoredFile | null> {

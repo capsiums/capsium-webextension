@@ -17,12 +17,32 @@ import type { StorageFile } from './storage';
  * reactors respond 501; execution is out of scope).
  */
 
+/**
+ * Route-inheritance attributes (§4a, 05x-routing §Route Inheritance):
+ * `remap` changes the URL path a route answers on; `responseRewrite`
+ * replaces the served body/headers; `responseHeaders`/`requestHeaders`
+ * are attached by the serving layer.
+ */
+const routeInheritanceAttributes = {
+  /** URL path actually matched (defaults to `path`). */
+  remap: z.string().startsWith('/').optional(),
+  responseRewrite: z
+    .looseObject({
+      body: z.string().optional(),
+      headers: z.record(z.string(), z.string()).optional(),
+    })
+    .optional(),
+  responseHeaders: z.record(z.string(), z.string()).optional(),
+  requestHeaders: z.record(z.string(), z.string()).optional(),
+} as const;
+
 export const staticRouteSchema = z.object({
   path: z.string().startsWith('/'),
   resource: z.string().min(1),
   headers: z.record(z.string(), z.string()).optional(),
   headersFile: z.string().optional(),
   visibility: z.enum(['exported', 'private']).optional(),
+  ...routeInheritanceAttributes,
 });
 
 export const datasetRouteSchema = z.object({
@@ -35,6 +55,7 @@ export const handlerRouteSchema = z.object({
   path: z.string().startsWith('/'),
   method: z.string().min(1),
   handler: z.string().min(1),
+  ...routeInheritanceAttributes,
 });
 
 export const routeSchema = z.union([
