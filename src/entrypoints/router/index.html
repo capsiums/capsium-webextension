@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Capsium Viewer</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      #sandbox {
+        border: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #status {
+        display: none;
+        padding: 2rem;
+        font-family: system-ui, sans-serif;
+      }
+      #status[data-kind='locked'] {
+        white-space: pre-wrap;
+        font-family: ui-monospace, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Packaged content renders in the sandbox page: opaque origin, no
+         extension APIs. Chrome sandboxes it via the manifest sandbox key;
+         Firefox does not implement that key, so the sandbox attribute
+         provides the same isolation (no allow-same-origin on purpose). -->
+    <iframe
+      id="sandbox"
+      src="/sandbox.html"
+      sandbox="allow-scripts allow-forms allow-popups allow-modals"
+    ></iframe>
+    <div id="status" role="main"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -94,6 +94,12 @@ export interface RuntimeMessagingPort {
   sendMessage(message: unknown): Promise<unknown>;
 }
 
+/** Blob URL creation/revocation (URL.createObjectURL / revokeObjectURL). */
+export interface BlobUrlPort {
+  create(blob: Blob): string;
+  revoke(url: string): void;
+}
+
 /** HTML rewriting strategy: direct DOMParser (Firefox) or offscreen (Chrome). */
 export interface HtmlRewriter {
   rewrite(html: string, baseUrl: string): Promise<string>;
