@@ -32,8 +32,8 @@ export type {
   DatasetRoute,
   HandlerRoute,
 } from './routes';
-export { parseStorage, storageSchema } from './storage';
-export type { StorageFile, DataSet } from './storage';
+export { parseStorage, storageSchema, storageLayerSchema } from './storage';
+export type { StorageFile, DataSet, StorageLayer } from './storage';
 export { parseSecurity, securitySchema } from './security';
 export type { SecurityFile } from './security';
 export {

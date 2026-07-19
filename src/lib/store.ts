@@ -25,6 +25,8 @@ export interface StoredPackageInfo {
   files: string[];
   validity: ContentValidity;
   checksums: 'verified' | 'absent';
+  /** Parsed layer tombstones, layer directory -> deleted merged paths (§5a). */
+  tombstones?: Record<string, string[]>;
 }
 
 export interface PreparedFile {

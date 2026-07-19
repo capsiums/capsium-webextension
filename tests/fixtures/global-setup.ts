@@ -17,6 +17,10 @@
  *  - encrypted-demo-1.0.0.cap: §6b encrypted layout — metadata.json
  *    (cleartext) + signature.json (envelope) + package.enc (AES-256-GCM
  *    ciphertext of the inner canonical zip; DEK wrapped RSA-OAEP-SHA256).
+ *  - layered-demo-1.0.0.cap: §5a overlay storage — base (exported) +
+ *    updates (private, writable) layers; updates overrides index.html and
+ *    tombstones content/gone.html; manifest/routes auto-generated from the
+ *    merged view.
  * The signing/encryption private keys are written next to the fixtures
  * (*.private.pem) for cross-implementation checks.
  */
@@ -40,6 +44,11 @@ export const BADSIG_CAP = 'signed-demo-1.0.0-badsig.cap';
 export const SIGNED_PRIVATE_KEY_FILE = 'signed-demo-1.0.0.private.pem';
 export const ENCRYPTED_CAP = 'encrypted-demo-1.0.0.cap';
 export const ENCRYPTED_PRIVATE_KEY_FILE = 'encrypted-demo-1.0.0.private.pem';
+export const LAYERED_CAP = 'layered-demo-1.0.0.cap';
+
+/** Markers distinguishing the base vs overriding layer of LAYERED_CAP. */
+export const LAYERED_BASE_INDEX = 'BASE layer index';
+export const LAYERED_UPDATED_INDEX = 'UPDATES layer index (overrides)';
 
 /** 1x1 PNG; tests assert byte-identical round-trip of these exact bytes. */
 export const PIXEL_PNG_BASE64 =
@@ -238,5 +247,55 @@ export default function setup(): void {
       new URL(`./generated/${ENCRYPTED_PRIVATE_KEY_FILE}`, import.meta.url),
     ),
     encKeyPair.privateKeyPem,
+  );
+
+  // Layered (§5a): base (exported) + updates (private, writable) overlay;
+  // updates overrides index.html and tombstones content/gone.html.
+  const enc2 = new TextEncoder();
+  const layeredFiles: Record<string, Uint8Array> = {
+    'metadata.json': enc2.encode(
+      JSON.stringify({
+        name: 'layered-demo',
+        version: '1.0.0',
+        description: 'Layered storage demo package',
+        guid: 'https://github.com/capsiums/layered-demo',
+      }),
+    ),
+    'storage.json': enc2.encode(
+      JSON.stringify({
+        storage: {
+          dataSets: {
+            animals: { source: 'data/animals.json', schemaType: 'json-schema' },
+          },
+          layers: [
+            { path: 'base', writable: false, visibility: 'exported' },
+            { path: 'updates', writable: true, visibility: 'private' },
+          ],
+        },
+      }),
+    ),
+    'base/content/index.html': enc2.encode(
+      `<!doctype html><html><body>${LAYERED_BASE_INDEX}</body></html>`,
+    ),
+    'base/content/gone.html': enc2.encode(
+      '<!doctype html><html><body>deleted in updates</body></html>',
+    ),
+    'base/content/styles.css': enc2.encode('body { color: #12404f; }'),
+    'base/data/animals.json': enc2.encode(
+      JSON.stringify([{ name: 'capybara' }]),
+    ),
+    'updates/content/index.html': enc2.encode(
+      `<!doctype html><html><body>${LAYERED_UPDATED_INDEX}</body></html>`,
+    ),
+    'updates/.capsium-tombstones': enc2.encode(
+      JSON.stringify(['content/gone.html']),
+    ),
+  };
+  writeFileSync(
+    fileURLToPath(new URL(`./generated/${LAYERED_CAP}`, import.meta.url)),
+    zipSync({
+      ...layeredFiles,
+      'security.json': securityJsonBytes(checksumsOf(layeredFiles)),
+    }),
   );
 }

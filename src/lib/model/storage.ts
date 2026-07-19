@@ -6,8 +6,8 @@ import { ModelError } from './index';
  *
  * Canonical form: {storage: {dataSets: {<id>: {...}, ...}}}.
  * Legacy gem form {"datasets": [{name, source, format, schema}]} is accepted
- * on read and normalized. `layers` (overlay FS) is parsed if present but has
- * no behavior yet — layered storage is explicitly deferred.
+ * on read and normalized. `layers` (§5a overlay FS) declares the layered
+ * storage stack, bottom → top; see lib/layers.ts for resolution semantics.
  */
 
 export const dataSetSchema = z
@@ -28,15 +28,25 @@ export const dataSetSchema = z
     },
   );
 
+/** One overlay layer (§5a), a package-relative directory mirroring the tree. */
+export const storageLayerSchema = z.looseObject({
+  path: z.string().min(1),
+  /** writes go to the topmost writable layer (default false). */
+  writable: z.boolean().optional(),
+  /** private layers are hidden from dependent packages (default exported). */
+  visibility: z.enum(['exported', 'private']).optional(),
+});
+
 export const storageSchema = z.object({
   storage: z.looseObject({
     dataSets: z.record(z.string(), dataSetSchema).default({}),
-    /** Parsed, no behavior yet (deferred). */
-    layers: z.unknown().optional(),
+    /** Overlay layers, bottom → top (§5a). */
+    layers: z.array(storageLayerSchema).optional(),
   }),
 });
 
 export type DataSet = z.infer<typeof dataSetSchema>;
+export type StorageLayer = z.infer<typeof storageLayerSchema>;
 export type StorageFile = z.infer<typeof storageSchema>;
 
 const legacyDataSetSchema = z.looseObject({
