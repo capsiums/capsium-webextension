@@ -2,55 +2,87 @@ import { describe, expect, it } from 'vitest';
 import {
   DnrRuleManager,
   REGISTRY_KEY,
-  buildRules,
+  basicAuthorizationHeader,
+  buildPackageRules,
   escapeRegex,
-  type RuleSpec,
 } from '../src/lib/dnr';
+import { decodeBase64 } from '../src/lib/base64';
 import { FakeDnr, FakeStorage } from './helpers/fakes';
 
 const CAP_A = '11111111-1111-4111-8111-111111111111';
 const CAP_B = '22222222-2222-4222-8222-222222222222';
+const ROUTER = 'chrome-extension://ext-id/router.html';
 
-const specs = (prefix: string): RuleSpec[] => [
-  { path: '/', dataUri: `data:text/html;base64,${prefix}0` },
-  { path: '/index', dataUri: `data:text/html;base64,${prefix}1` },
-  { path: '/assets/a.b+1.png', dataUri: `data:image/png;base64,${prefix}2` },
-];
+const options = (authorization?: string) => ({
+  routerBaseUrl: ROUTER,
+  ...(authorization === undefined ? {} : { authorization }),
+});
 
-describe('buildRules', () => {
+describe('buildPackageRules', () => {
+  it('emits exactly ONE redirect rule per package', () => {
+    const rules = buildPackageRules(CAP_A, options(), 0);
+    expect(rules).toHaveLength(1);
+    expect(rules[0]?.action.type).toBe('redirect');
+  });
+
+  it('redirects every package URL to the router page, path in the fragment', () => {
+    const [rule] = buildPackageRules(CAP_A, options(), 0);
+    if (rule?.action.type !== 'redirect') throw new Error('expected redirect');
+    expect(rule.action.redirect.regexSubstitution).toBe(
+      `${ROUTER}#/serve/${CAP_A}\\1`,
+    );
+    // The regex captures the URL path as group 1.
+    const re = new RegExp(rule.condition.regexFilter);
+    const match = re.exec(`https://${CAP_A}.cap/assets/app.js`);
+    expect(match?.[1]).toBe('/assets/app.js');
+    expect(re.exec(`https://${CAP_A}.cap/`)?.[1]).toBe('/');
+    expect(re.exec(`https://${CAP_A}.cap`)?.[1]).toBeUndefined();
+  });
+
   it('is deterministic per capId and namespaces rule IDs per package', () => {
-    const a1 = buildRules(CAP_A, specs('QQ'), 0);
-    const a2 = buildRules(CAP_A, specs('QQ'), 0);
+    const a1 = buildPackageRules(CAP_A, options(), 0);
+    const a2 = buildPackageRules(CAP_A, options(), 0);
     expect(a1.map((rule) => rule.id)).toEqual(a2.map((rule) => rule.id));
 
-    const b = buildRules(CAP_B, specs('Qg'), 0);
+    const b = buildPackageRules(CAP_B, options(), 0);
     const aIds = new Set(a1.map((rule) => rule.id));
     expect(b.some((rule) => aIds.has(rule.id))).toBe(false);
     expect(a1.every((rule) => rule.id >= 1)).toBe(true);
   });
 
-  it('anchors the regexFilter so /index cannot shadow /index.html', () => {
-    const [root, index, asset] = buildRules(CAP_A, specs('QQ'), 0);
-    expect(root?.condition.regexFilter).toBe(
-      `^https://${CAP_A}\\.cap/(\\?.*)?$`,
-    );
-    expect(index?.condition.regexFilter).toBe(
-      `^https://${CAP_A}\\.cap/index(\\?.*)?$`,
-    );
-    // dots and pluses in paths are escaped
-    expect(asset?.condition.regexFilter).toContain('/assets/a\\.b\\+1\\.png');
-    const re = new RegExp(index?.condition.regexFilter ?? '');
-    expect(re.test(`https://${CAP_A}.cap/index`)).toBe(true);
-    expect(re.test(`https://${CAP_A}.cap/index.html`)).toBe(false);
-    expect(re.test(`https://${CAP_A}.cap/index?x=1`)).toBe(true);
+  it('does not match other packages’ origins', () => {
+    const [rule] = buildPackageRules(CAP_A, options(), 0);
+    const re = new RegExp(rule?.condition.regexFilter ?? '');
+    expect(re.test(`https://${CAP_B}.cap/`)).toBe(false);
   });
 
-  it('redirects to the data: URI', () => {
-    const [root] = buildRules(CAP_A, specs('QQ'), 0);
-    expect(root?.action.type).toBe('redirect');
-    if (root?.action.type === 'redirect') {
-      expect(root.action.redirect.url).toBe('data:text/html;base64,QQ0');
+  it('adds the Authorization modifyHeaders rule when authorized (§4b)', () => {
+    const authorization = basicAuthorizationHeader({
+      username: 'alice',
+      password: 'swordfish',
+    });
+    const rules = buildPackageRules(CAP_A, options(authorization), 0);
+    expect(rules).toHaveLength(2);
+    const headerRule = rules[1];
+    expect(headerRule?.action.type).toBe('modifyHeaders');
+    if (headerRule?.action.type === 'modifyHeaders') {
+      expect(headerRule.action.requestHeaders).toEqual([
+        { header: 'Authorization', operation: 'set', value: authorization },
+      ]);
     }
+  });
+});
+
+describe('basicAuthorizationHeader (§4b)', () => {
+  it('encodes credentials as a Basic token', () => {
+    const header = basicAuthorizationHeader({
+      username: 'alice',
+      password: 'swordfish',
+    });
+    expect(header.startsWith('Basic ')).toBe(true);
+    expect(new TextDecoder().decode(decodeBase64(header.slice(6)))).toBe(
+      'alice:swordfish',
+    );
   });
 });
 
@@ -59,15 +91,15 @@ describe('DnrRuleManager', () => {
     const dnr = new FakeDnr();
     const manager = new DnrRuleManager(dnr, new FakeStorage());
 
-    const aIds = await manager.installPackageRules(CAP_A, specs('QQ'));
-    const bIds = await manager.installPackageRules(CAP_B, specs('Qg'));
+    const aIds = await manager.installPackageRules(CAP_A, options());
+    const bIds = await manager.installPackageRules(CAP_B, options());
+    expect(aIds).toHaveLength(1);
+    expect(bIds).toHaveLength(1);
     expect(aIds.some((id) => bIds.includes(id))).toBe(false);
-    expect(dnr.rules.size).toBe(aIds.length + bIds.length);
+    expect(dnr.rules.size).toBe(2);
 
     await manager.removePackageRules(CAP_A);
-    expect([...dnr.rules.keys()].sort()).toEqual(
-      [...bIds].sort((x, y) => x - y),
-    );
+    expect([...dnr.rules.keys()]).toEqual(bIds);
 
     await manager.removePackageRules(CAP_B);
     expect(dnr.rules.size).toBe(0);
@@ -76,26 +108,27 @@ describe('DnrRuleManager', () => {
   it('reinstall replaces a package’s rules atomically (old IDs removed first)', async () => {
     const dnr = new FakeDnr();
     const manager = new DnrRuleManager(dnr, new FakeStorage());
-    const first = await manager.installPackageRules(CAP_A, specs('QQ'));
-    const second = await manager.installPackageRules(CAP_A, specs('eQ'));
-    expect(second).toEqual(first); // same deterministic block
-    expect(dnr.rules.size).toBe(first.length);
-    const action = dnr.rules.get(first[0] ?? 0)?.action;
+    const first = await manager.installPackageRules(CAP_A, options());
+    const second = await manager.installPackageRules(
+      CAP_A,
+      options('Basic dGVzdA=='),
+    );
+    expect(second).not.toEqual(first); // auth rule added: 2 IDs now
+    expect(second[0]).toBe(first[0]); // same deterministic block start
+    expect(dnr.rules.size).toBe(2);
+    const action = dnr.rules.get(second[0] ?? 0)?.action;
     expect(action?.type).toBe('redirect');
-    if (action?.type === 'redirect') {
-      expect(action.redirect.url).toBe('data:text/html;base64,eQ0');
-    }
   });
 
   it('moves to a fresh block on collision with another installed package', async () => {
     const storage = new FakeStorage();
     const dnr = new FakeDnr();
     const manager = new DnrRuleManager(dnr, storage);
-    const aIds = await manager.installPackageRules(CAP_A, specs('QQ'));
+    const aIds = await manager.installPackageRules(CAP_A, options());
 
     // Forge a registry where CAP_B already owns CAP_A's deterministic block.
     await storage.set({ [REGISTRY_KEY]: { [CAP_B]: aIds } });
-    const aIds2 = await manager.installPackageRules(CAP_A, specs('QQ'));
+    const aIds2 = await manager.installPackageRules(CAP_A, options());
     expect(aIds2.some((id) => aIds.includes(id))).toBe(false);
     expect(dnr.rules.size).toBe(aIds.length + aIds2.length);
   });
@@ -103,8 +136,8 @@ describe('DnrRuleManager', () => {
   it('reconcile prunes uninstalled packages and reports missing session rules', async () => {
     const dnr = new FakeDnr();
     const manager = new DnrRuleManager(dnr, new FakeStorage());
-    await manager.installPackageRules(CAP_A, specs('QQ'));
-    await manager.installPackageRules(CAP_B, specs('Qg'));
+    await manager.installPackageRules(CAP_A, options());
+    await manager.installPackageRules(CAP_B, options());
 
     // CAP_B uninstalled; CAP_A lost its session rules (browser restart).
     dnr.clear();

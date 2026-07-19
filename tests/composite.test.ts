@@ -6,19 +6,15 @@ import {
   CAPSIUM_SCHEME,
 } from '../src/lib/composite';
 import {
-  buildCompositeRuleSpecs,
-  buildDependencyRuleSpecs,
-  OWN_PRIORITY,
-  DEPENDENCY_PRIORITY,
+  resolveUrlPath,
   type InstalledDependencyView,
-} from '../src/lib/serving';
-import { buildRules } from '../src/lib/dnr';
+} from '../src/lib/resolver';
 import { parseRoutes, parseStorage } from '../src/lib/model';
 import { PackageLoader } from '../src/lib/package-loader';
 import { CapsiumService } from '../src/lib/background-service';
 import { PackageStore } from '../src/lib/store';
 import { DnrRuleManager } from '../src/lib/dnr';
-import { decodeBase64, encodeBase64 } from '../src/lib/base64';
+import { encodeBase64 } from '../src/lib/base64';
 import { generatedFixtureBytes } from './helpers/fixtures';
 import {
   CANONICAL_CAP,
@@ -28,24 +24,21 @@ import {
   CORE_APP_JS,
   REWRITTEN_BODY,
 } from './fixtures/global-setup';
-import { FakeDnr, FakeRewriter, FakeStorage, FakeTabs } from './helpers/fakes';
+import {
+  FakeDnr,
+  FakeFileStore,
+  FakeRewriter,
+  FakeStorage,
+  FakeTabs,
+} from './helpers/fakes';
 
-const enc = new TextEncoder();
+const ROUTER = 'chrome-extension://ext-id/router.html';
+const DEP_CAP = 'dep-cap-id';
 const dec = new TextDecoder();
-
-function fileMap(
-  entries: Record<string, string>,
-): Map<string, { contentType: string; base64: string }> {
-  return new Map(
-    Object.entries(entries).map(([path, text]) => [
-      path,
-      { contentType: 'text/javascript', base64: encodeBase64(enc.encode(text)) },
-    ]),
-  );
-}
 
 function coreView(): InstalledDependencyView {
   return {
+    capId: DEP_CAP,
     guid: CORE_GUID,
     manifest: {
       resources: {
@@ -63,11 +56,11 @@ function coreView(): InstalledDependencyView {
     }),
     storage: null,
     tombstones: {},
-    files: fileMap({
-      'content/app.js': CORE_APP_JS,
-      'content/secret.js': 'secret',
-      'content/page.html': '<p>core</p>',
-    }),
+    fileTypes: {
+      'content/app.js': 'text/javascript',
+      'content/secret.js': 'text/javascript',
+      'content/page.html': 'text/html',
+    },
     filePaths: ['content/app.js', 'content/secret.js', 'content/page.html'],
   };
 }
@@ -143,10 +136,10 @@ describe('resolveDependencyResource', () => {
           ],
         },
       }),
-      files: fileMap({
-        'base/content/app.js': 'base',
-        'updates/content/app.js': 'updated',
-      }),
+      fileTypes: {
+        'base/content/app.js': 'text/javascript',
+        'updates/content/app.js': 'text/javascript',
+      },
       filePaths: ['base/content/app.js', 'updates/content/app.js'],
     };
     expect(resolveDependencyResource(layered, 'content/app.js')).toEqual({
@@ -156,43 +149,60 @@ describe('resolveDependencyResource', () => {
   });
 });
 
-describe('composite rule specs (§4a)', () => {
-  const parentRoutes = parseRoutes({
-    routes: [
-      { path: '/', resource: 'content/index.html' },
-      { path: '/vendor/app.js', resource: `${CORE_GUID}/content/app.js` },
-      { path: '/secret.js', resource: `${CORE_GUID}/content/secret.js` },
-    ],
-  });
+describe('composite resolution (§4a)', () => {
   const parentView = {
-    routes: parentRoutes,
+    capId: 'parent-cap-id',
+    routes: parseRoutes({
+      routes: [
+        { path: '/', resource: 'content/index.html' },
+        { path: '/vendor/app.js', resource: `${CORE_GUID}/content/app.js` },
+        { path: '/secret.js', resource: `${CORE_GUID}/content/secret.js` },
+      ],
+    }),
     storage: null,
     tombstones: {},
-    files: fileMap({ 'content/index.html': '<p>parent</p>' }),
+    fileTypes: { 'content/index.html': 'text/html' },
   };
 
   it('resolves capsium:// refs only when the dependency is installed', () => {
-    const withoutDep = buildCompositeRuleSpecs(parentView, []);
-    expect(withoutDep.map((spec) => spec.path)).toEqual(['/']);
-
-    const withDep = buildCompositeRuleSpecs(parentView, [coreView()]);
-    const paths = withDep.map((spec) => spec.path);
-    expect(paths).toContain('/vendor/app.js');
+    expect(resolveUrlPath(parentView, [], '/vendor/app.js').kind).toBe(
+      'not-found',
+    );
+    const resolution = resolveUrlPath(parentView, [coreView()], '/vendor/app.js');
+    expect(resolution).toEqual({
+      kind: 'found',
+      file: {
+        capId: DEP_CAP,
+        path: 'content/app.js',
+        contentType: 'text/javascript',
+      },
+    });
     // private resource of the dependency is never served
-    expect(paths).not.toContain('/secret.js');
+    expect(resolveUrlPath(parentView, [coreView()], '/secret.js').kind).toBe(
+      'not-found',
+    );
   });
 
   it('serves own routes above inherited dependency routes', () => {
-    const specs = buildCompositeRuleSpecs(parentView, [coreView()]);
-    const own = specs.find((spec) => spec.path === '/');
-    const inherited = specs.find((spec) => spec.path === '/app.js');
-    expect(own?.priority).toBe(OWN_PRIORITY);
-    expect(inherited?.priority).toBe(DEPENDENCY_PRIORITY);
-    // route-private dep route is not inherited
-    expect(specs.some((spec) => spec.path === '/internal.js')).toBe(false);
+    // Own routes win; exported dep routes serve as the lower layer;
+    // route-private dep routes are not inherited.
+    expect(resolveUrlPath(parentView, [coreView()], '/')).toEqual({
+      kind: 'found',
+      file: {
+        capId: 'parent-cap-id',
+        path: 'content/index.html',
+        contentType: 'text/html',
+      },
+    });
+    expect(resolveUrlPath(parentView, [coreView()], '/app.js').kind).toBe(
+      'found',
+    );
+    expect(
+      resolveUrlPath(parentView, [coreView()], '/internal.js').kind,
+    ).toBe('not-found');
   });
 
-  it('honors remap and responseRewrite.body, and emits header companions', () => {
+  it('honors remap and responseRewrite.body at serve time', () => {
     const routes = parseRoutes({
       routes: [
         {
@@ -204,60 +214,47 @@ describe('composite rule specs (§4a)', () => {
         },
       ],
     });
-    const specs = buildCompositeRuleSpecs(
-      { routes, storage: null, tombstones: {}, files: new Map() },
-      [coreView()],
+    const view = {
+      capId: 'parent-cap-id',
+      routes,
+      storage: null,
+      tombstones: {},
+      fileTypes: {},
+    };
+    expect(resolveUrlPath(view, [coreView()], '/wrapped.js').kind).toBe(
+      'not-found', // remapped: the original path no longer answers
     );
-    const spec = specs.find((entry) => entry.path === '/vendor/wrapped.js');
-    expect(spec).toBeDefined();
-    if (spec === undefined) throw new Error('unreachable');
-    expect(dec.decode(decodeBase64(spec.dataUri.split(',')[1] ?? ''))).toBe(
-      REWRITTEN_BODY,
-    );
-    expect(spec.requestHeaders).toEqual({ 'X-Q': '2' });
-    expect(spec.responseHeaders).toEqual({ 'X-R': '1' });
-
-    const rules = buildRules(
-      '11111111-1111-4111-8111-111111111111',
-      specs,
-      0,
-    );
-    const headerRule = rules.find(
-      (rule) =>
-        rule.action.type === 'modifyHeaders' &&
-        rule.condition.regexFilter.includes('wrapped'),
-    );
-    expect(headerRule).toBeDefined();
-    if (headerRule?.action.type === 'modifyHeaders') {
-      expect(headerRule.action.requestHeaders).toEqual([
-        { header: 'X-Q', operation: 'set', value: '2' },
-      ]);
-      expect(headerRule.action.responseHeaders).toEqual([
-        { header: 'X-R', operation: 'set', value: '1' },
-      ]);
-    }
-  });
-
-  it('buildDependencyRuleSpecs serves only exported routes/resources', () => {
-    const specs = buildDependencyRuleSpecs(coreView());
-    expect(specs.map((spec) => spec.path)).toEqual(['/app.js']);
+    const resolution = resolveUrlPath(view, [coreView()], '/vendor/wrapped.js');
+    expect(resolution).toEqual({
+      kind: 'found',
+      file: {
+        capId: DEP_CAP,
+        path: 'content/app.js',
+        contentType: 'text/javascript',
+        bodyOverride: REWRITTEN_BODY,
+        responseHeaders: { 'X-R': '1' },
+      },
+    });
   });
 });
 
 describe('CapsiumService — composite end to end', () => {
   function makeService(now: () => number = Date.now) {
     const storage = new FakeStorage();
+    const fileStore = new FakeFileStore();
     const dnr = new FakeDnr();
     const tabs = new FakeTabs();
     const service = new CapsiumService({
       loader: new PackageLoader(),
-      store: new PackageStore(storage, now),
+      store: new PackageStore(storage, fileStore, now),
       rules: new DnrRuleManager(dnr, storage),
       rewriter: new FakeRewriter(),
       tabs,
+      fileStore,
+      routerBaseUrl: ROUTER,
       now,
     });
-    return { service, storage, dnr, tabs };
+    return { service, storage, fileStore, dnr, tabs };
   }
 
   const dataUriOf = (name: string): string =>
@@ -265,40 +262,35 @@ describe('CapsiumService — composite end to end', () => {
       generatedFixtureBytes(name),
     )}`;
 
-  function redirectBodies(dnr: FakeDnr): Map<string, string> {
-    const out = new Map<string, string>();
-    const marker = '\\.cap';
-    for (const rule of dnr.rules.values()) {
-      if (rule.action.type !== 'redirect') continue;
-      const filter = rule.condition.regexFilter;
-      const start = filter.indexOf(marker) + marker.length;
-      const end = filter.indexOf('(\\?.*)?$');
-      const path = filter.slice(start, end).replace(/\\(.)/g, '$1');
-      out.set(
-        path,
-        dec.decode(decodeBase64(rule.action.redirect.url.split(',')[1] ?? '')),
-      );
-    }
-    return out;
-  }
-
   it('lists declared dependencies, installs them in-session, serves exported only', async () => {
-    const { service, dnr } = makeService();
+    const { service, fileStore, dnr } = makeService();
     const opened = await service.openFromDataUri(
       dataUriOf(COMPOSITE_PARENT_CAP),
     );
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
+    const parentCapId = opened.info.capId;
     expect(opened.info.dependencies).toEqual([
       { guid: CORE_GUID, range: '>=1.0.0', status: 'missing' },
     ]);
-    // Only the parent's own routes are served so far (refs unresolved).
-    let bodies = redirectBodies(dnr);
-    expect([...bodies.keys()].sort()).toEqual(['/', '/index.html']);
+    // Still just ONE redirect rule — no per-route rules at all.
+    expect(dnr.rules.size).toBe(1);
+
+    // Only the parent's own routes resolve so far (refs unresolved).
+    let results = await service.resolve(parentCapId, [
+      '/',
+      '/index.html',
+      '/vendor/core/app.js',
+    ]);
+    expect(results.map((result) => result.kind)).toEqual([
+      'found',
+      'found',
+      'not-found',
+    ]);
 
     // A package whose guid is not declared is refused.
     const wrong = await service.addDependencyFromDataUri(
-      opened.info.capId,
+      parentCapId,
       dataUriOf(CANONICAL_CAP),
     );
     expect(wrong.ok).toBe(false);
@@ -307,7 +299,7 @@ describe('CapsiumService — composite end to end', () => {
 
     // Install the real dependency.
     const added = await service.addDependencyFromDataUri(
-      opened.info.capId,
+      parentCapId,
       dataUriOf(COMPOSITE_CORE_CAP),
     );
     expect(added.ok).toBe(true);
@@ -321,32 +313,55 @@ describe('CapsiumService — composite end to end', () => {
         version: '1.0.0',
       },
     ]);
+    // No rule churn on dependency install: resolution is dynamic.
+    expect(dnr.rules.size).toBe(1);
 
-    bodies = redirectBodies(dnr);
     // Parent ref routes now resolve; private ones stay unserved.
-    expect(bodies.get('/vendor/core/app.js')).toBe(CORE_APP_JS);
-    expect(bodies.has('/secret.js')).toBe(false);
-    // responseRewrite.body is baked into the served body.
-    expect(bodies.get('/wrapped.js')).toBe(REWRITTEN_BODY);
-    // Exported dep routes are inherited; route-private ones are not.
-    expect(bodies.get('/page.html')).toContain('core page');
-    expect(bodies.has('/internal.js')).toBe(false);
-    // Companion modifyHeaders rules exist for the rewritten route.
-    expect(
-      [...dnr.rules.values()].some((rule) => rule.action.type === 'modifyHeaders'),
-    ).toBe(true);
+    results = await service.resolve(parentCapId, [
+      '/vendor/core/app.js',
+      '/secret.js',
+      '/wrapped.js',
+      '/page.html',
+      '/internal.js',
+    ]);
+    const byPath = new Map(results.map((result) => [result.path, result]));
 
-    // Rules rebuilt after a browser restart keep serving the composite.
+    const appJs = byPath.get('/vendor/core/app.js');
+    expect(appJs?.kind).toBe('found');
+    if (appJs?.kind === 'found') {
+      expect(appJs.fileCapId).not.toBe(parentCapId); // owned by the dependency
+      expect(
+        dec.decode((await fileStore.get(appJs.fileCapId, appJs.filePath))!),
+      ).toBe(CORE_APP_JS);
+    }
+
+    expect(byPath.get('/secret.js')?.kind).toBe('not-found');
+
+    // responseRewrite.body rides along as a body override.
+    const wrapped = byPath.get('/wrapped.js');
+    expect(wrapped?.kind).toBe('found');
+    if (wrapped?.kind === 'found') {
+      expect(wrapped.bodyOverride).toBe(REWRITTEN_BODY);
+    }
+
+    // Exported dep routes are inherited; route-private ones are not.
+    expect(byPath.get('/page.html')?.kind).toBe('found');
+    expect(byPath.get('/internal.js')?.kind).toBe('not-found');
+
+    // Rules rebuilt after a browser restart keep resolving the composite.
     dnr.clear();
     await service.onStartup();
-    bodies = redirectBodies(dnr);
-    expect(bodies.get('/vendor/core/app.js')).toBe(CORE_APP_JS);
-    expect(bodies.get('/page.html')).toContain('core page');
+    expect(dnr.rules.size).toBe(1);
+    results = await service.resolve(parentCapId, [
+      '/vendor/core/app.js',
+      '/page.html',
+    ]);
+    expect(results.map((result) => result.kind)).toEqual(['found', 'found']);
   });
 
   it('sweeps a dependency together with its expired parent', async () => {
     let now = 1_000_000;
-    const { service, storage, dnr } = makeService(() => now);
+    const { service, storage, fileStore, dnr } = makeService(() => now);
     const opened = await service.openFromDataUri(
       dataUriOf(COMPOSITE_PARENT_CAP),
     );
@@ -361,10 +376,11 @@ describe('CapsiumService — composite end to end', () => {
     const swept = await service.sweepExpired();
     expect(swept).toEqual([opened.info.capId]);
     expect(dnr.rules.size).toBe(0);
-    // The dependency's storage went with its parent.
+    // The dependency's bytes went with its parent.
+    expect(fileStore.packages.size).toBe(0);
     expect(
       storage.keys().filter((key) => key.includes('.pkg.')),
     ).toEqual([]);
-    expect(await new PackageStore(storage).listIndex()).toEqual([]);
+    expect(await new PackageStore(storage, fileStore).listIndex()).toEqual([]);
   });
 });

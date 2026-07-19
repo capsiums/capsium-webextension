@@ -9,17 +9,25 @@ import {
 } from '../src/lib/layers';
 import { parseStorage, type StorageFile } from '../src/lib/model';
 import { PackageLoader } from '../src/lib/package-loader';
-import { CapsiumService, buildRuleSpecs } from '../src/lib/background-service';
+import { CapsiumService } from '../src/lib/background-service';
+import { resolveUrlPath } from '../src/lib/resolver';
 import { PackageStore } from '../src/lib/store';
 import { DnrRuleManager } from '../src/lib/dnr';
-import { decodeBase64, encodeBase64 } from '../src/lib/base64';
+import { encodeBase64 } from '../src/lib/base64';
 import { generatedFixtureBytes } from './helpers/fixtures';
 import {
   LAYERED_CAP,
   LAYERED_UPDATED_INDEX,
 } from './fixtures/global-setup';
-import { FakeDnr, FakeRewriter, FakeStorage, FakeTabs } from './helpers/fakes';
+import {
+  FakeDnr,
+  FakeFileStore,
+  FakeRewriter,
+  FakeStorage,
+  FakeTabs,
+} from './helpers/fakes';
 
+const ROUTER = 'chrome-extension://ext-id/router.html';
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -170,128 +178,145 @@ describe('PackageLoader — layered fixture', () => {
   });
 });
 
-describe('buildRuleSpecs — layered serving', () => {
+describe('resolveUrlPath — layered serving', () => {
   const tombstones = { updates: ['content/gone.html'] };
-  const files = new Map([
-    [
-      'base/content/index.html',
-      { contentType: 'text/html', base64: encodeBase64(enc.encode('base')) },
-    ],
-    [
-      'updates/content/index.html',
-      {
-        contentType: 'text/html',
-        base64: encodeBase64(enc.encode('updated')),
-      },
-    ],
-    [
-      'base/content/gone.html',
-      { contentType: 'text/html', base64: encodeBase64(enc.encode('gone')) },
-    ],
-    [
-      'base/data/animals.json',
-      {
-        contentType: 'application/json',
-        base64: encodeBase64(enc.encode('[]')),
-      },
-    ],
-  ]);
-  const storage: StorageFile = parseStorage({
-    storage: {
-      dataSets: { animals: { source: 'data/animals.json' } },
-      layers: [
-        { path: 'base', visibility: 'exported' },
-        { path: 'updates', visibility: 'private' },
-      ],
-    },
-  });
-
-  it('serves the top-layer winner and resolves dataset sources through layers', () => {
-    const specs = buildRuleSpecs(
-      {
-        routes: [
-          { path: '/index.html', resource: 'content/index.html' },
-          { path: '/api/v1/data/animals', dataset: 'animals' },
+  const view = {
+    capId: 'cap-id',
+    storage: parseStorage({
+      storage: {
+        dataSets: { animals: { source: 'data/animals.json' } },
+        layers: [
+          { path: 'base', visibility: 'exported' },
+          { path: 'updates', visibility: 'private' },
         ],
       },
-      files,
-      storage,
-      tombstones,
+    }),
+    tombstones,
+    fileTypes: {
+      'base/content/index.html': 'text/html',
+      'updates/content/index.html': 'text/html',
+      'base/content/gone.html': 'text/html',
+      'base/data/animals.json': 'application/json',
+    },
+  };
+
+  it('serves the top-layer winner and resolves dataset sources through layers', () => {
+    const resolution = resolveUrlPath(
+      {
+        ...view,
+        routes: {
+          routes: [
+            { path: '/index.html', resource: 'content/index.html' },
+            { path: '/api/v1/data/animals', dataset: 'animals' },
+          ],
+        },
+      },
+      [],
+      '/index.html',
     );
-    expect(specs).toHaveLength(2);
-    const served = dec.decode(
-      decodeBase64(specs[0]!.dataUri.split(',')[1] ?? ''),
+    expect(resolution).toEqual({
+      kind: 'found',
+      file: {
+        capId: 'cap-id',
+        path: 'updates/content/index.html',
+        contentType: 'text/html',
+      },
+    });
+
+    const dataset = resolveUrlPath(
+      {
+        ...view,
+        routes: {
+          routes: [{ path: '/api/v1/data/animals', dataset: 'animals' }],
+        },
+      },
+      [],
+      '/api/v1/data/animals',
     );
-    expect(served).toBe('updated');
-    expect(specs[1]!.dataUri).toContain('data:application/json');
+    expect(dataset).toEqual({
+      kind: 'found',
+      file: {
+        capId: 'cap-id',
+        path: 'base/data/animals.json',
+        contentType: 'application/json',
+      },
+    });
   });
 
-  it('skips tombstoned resources (404-equivalent: no rule)', () => {
-    const specs = buildRuleSpecs(
-      { routes: [{ path: '/gone.html', resource: 'content/gone.html' }] },
-      files,
-      storage,
-      tombstones,
+  it('resolves tombstoned resources as not-found (the router 404s)', () => {
+    const resolution = resolveUrlPath(
+      {
+        ...view,
+        routes: {
+          routes: [{ path: '/gone.html', resource: 'content/gone.html' }],
+        },
+      },
+      [],
+      '/gone.html',
     );
-    expect(specs).toEqual([]);
+    expect(resolution.kind).toBe('not-found');
   });
 });
 
 describe('CapsiumService — layered package end to end', () => {
   function makeService() {
     const storage = new FakeStorage();
+    const fileStore = new FakeFileStore();
     const dnr = new FakeDnr();
     const service = new CapsiumService({
       loader: new PackageLoader(),
-      store: new PackageStore(storage),
+      store: new PackageStore(storage, fileStore),
       rules: new DnrRuleManager(dnr, storage),
       rewriter: new FakeRewriter(),
       tabs: new FakeTabs(),
+      fileStore,
+      routerBaseUrl: ROUTER,
     });
-    return { service, storage, dnr };
+    return { service, storage, fileStore, dnr };
   }
 
   const dataUri = `data:application/vnd.capsium.package;base64,${encodeBase64(
     generatedFixtureBytes(LAYERED_CAP),
   )}`;
 
-  it('serves the overriding layer and rebuilds rules after a restart', async () => {
-    const { service, dnr } = makeService();
+  it('serves the overriding layer and resolves identically after a restart', async () => {
+    const { service, fileStore, dnr } = makeService();
     const response = await service.openFromDataUri(dataUri);
     expect(response.ok).toBe(true);
     if (!response.ok) return;
+    const capId = response.info.capId;
 
-    const indexRule = [...dnr.rules.values()].find(
-      (rule) =>
-        rule.action.type === 'redirect' &&
-        rule.condition.regexFilter.includes('index\\.html'),
-    );
-    expect(indexRule).toBeDefined();
-    if (indexRule?.action.type !== 'redirect') throw new Error('unreachable');
-    const served = dec.decode(
-      decodeBase64(indexRule.action.redirect.url.split(',')[1] ?? ''),
-    );
-    expect(served).toContain(LAYERED_UPDATED_INDEX);
+    // One redirect rule; resolution picks the top-layer winner.
+    expect(dnr.rules.size).toBe(1);
+    const resolved = await service.resolve(capId, ['/index.html', '/gone']);
+    const index = resolved[0];
+    expect(index?.kind).toBe('found');
+    if (index?.kind === 'found') {
+      expect(index.filePath).toBe('updates/content/index.html');
+      expect(
+        dec.decode((await fileStore.get(index.fileCapId, index.filePath))!),
+      ).toContain(LAYERED_UPDATED_INDEX);
+    }
+    // Auto-generated routes exclude the tombstoned page → router 404.
+    expect(resolved[1]?.kind).toBe('not-found');
 
-    // No rule for the tombstoned page (auto-generated routes exclude it).
-    expect(
-      [...dnr.rules.values()].some((rule) =>
-        rule.condition.regexFilter.includes('gone'),
-      ),
-    ).toBe(false);
-
-    // Session rules vanish on restart; rebuild must reuse stored tombstones.
+    // Session rules vanish on restart; resolution reuses stored tombstones.
     dnr.clear();
     await service.onStartup();
-    const rebuilt = [...dnr.rules.values()].find(
-      (rule) =>
-        rule.action.type === 'redirect' &&
-        rule.condition.regexFilter.includes('index\\.html'),
-    );
-    expect(rebuilt).toBeDefined();
-    if (rebuilt?.action.type !== 'redirect') throw new Error('unreachable');
-    expect(
-      dec.decode(decodeBase64(rebuilt.action.redirect.url.split(',')[1] ?? '')),
-    ).toContain(LAYERED_UPDATED_INDEX);
+    expect(dnr.rules.size).toBe(1);
+    const rebuilt = await service.resolve(capId, ['/index.html']);
+    const rebuiltIndex = rebuilt[0];
+    expect(rebuiltIndex?.kind).toBe('found');
+    if (rebuiltIndex?.kind === 'found') {
+      expect(rebuiltIndex.filePath).toBe('updates/content/index.html');
+      expect(
+        dec.decode(
+          (await fileStore.get(
+            rebuiltIndex.fileCapId,
+            rebuiltIndex.filePath,
+          ))!,
+        ),
+      ).toContain(LAYERED_UPDATED_INDEX);
+    }
   });
 });

@@ -18,8 +18,9 @@ import {
   ENCRYPTED_CAP,
   ENCRYPTED_PRIVATE_KEY_FILE,
 } from './fixtures/global-setup';
-import { FakeDnr, FakeRewriter, FakeStorage, FakeTabs } from './helpers/fakes';
+import { FakeDnr, FakeFileStore, FakeRewriter, FakeStorage, FakeTabs } from './helpers/fakes';
 
+const ROUTER = 'chrome-extension://ext-id/router.html';
 const dec = new TextDecoder();
 
 function fixtureKey(): string {
@@ -131,12 +132,15 @@ describe('PackageLoader — encrypted fixture', () => {
 describe('CapsiumService — encrypted package flow', () => {
   function makeService() {
     const storage = new FakeStorage();
+    const fileStore = new FakeFileStore();
     const service = new CapsiumService({
       loader: new PackageLoader(),
-      store: new PackageStore(storage),
+      store: new PackageStore(storage, fileStore),
       rules: new DnrRuleManager(new FakeDnr(), storage),
       rewriter: new FakeRewriter(),
       tabs: new FakeTabs(),
+      fileStore,
+      routerBaseUrl: ROUTER,
     });
     return service;
   }

@@ -4,26 +4,25 @@ import {
   type PreparedFile,
   type StoredPackageInfo,
 } from './store';
-import { DnrRuleManager, type RuleSpec } from './dnr';
+import { DnrRuleManager, basicAuthorizationHeader } from './dnr';
 import { baseUrlForResource } from './html-rewrite';
-import { parseDataUri, encodeBase64, decodeBase64 } from './base64';
+import { parseDataUri } from './base64';
 import { mergedPathFor } from './layers';
 import {
-  authorizationHeaderSpec,
-  buildCompositeRuleSpecs,
-  buildOwnRuleSpecs,
-  lockRuleSpecs,
+  resolveUrlPath,
+  validateRoutes,
   type InstalledDependencyView,
-  type ServingFiles,
-} from './serving';
+  type PackageServingView,
+} from './resolver';
 import { verifyHtpasswd } from './auth/htpasswd';
 import { DEFAULT_BASIC_REALM, type AuthenticationFile } from './model';
-import type { HtmlRewriter, TabsPort } from './ports';
-import type { RoutesFile, StorageFile } from './model';
+import type { FileStorePort, HtmlRewriter, TabsPort } from './ports';
+import type { RoutesFile } from './model';
 import type {
   DependencyViewInfo,
   OpenCapResponse,
   PackageViewInfo,
+  ResolveResult,
   RouteView,
 } from './messages';
 
@@ -36,30 +35,18 @@ export interface CapsiumServiceDeps {
   rules: DnrRuleManager;
   rewriter: HtmlRewriter;
   tabs: TabsPort;
+  fileStore: FileStorePort;
+  /** Absolute extension URL of the router page (runtime.getURL result). */
+  routerBaseUrl: string;
   now?: () => number;
   maxAgeMs?: number;
 }
 
 /**
- * Build DNR redirect specs from the (normalized) routes of a package
- * (single-package view; composite serving lives in lib/serving.ts).
- * Handler routes are accepted but not served (execution is deferred;
- * reactors respond 501). With layered storage, routes whose resource
- * resolves tombstoned/not-found are skipped (serving them would be a 404).
- */
-export function buildRuleSpecs(
-  routes: RoutesFile,
-  files: Map<string, { contentType: string; base64: string }>,
-  storage: StorageFile | null,
-  tombstones: Record<string, string[]> = {},
-): RuleSpec[] {
-  return buildOwnRuleSpecs({ routes, storage, tombstones, files });
-}
-
-/**
- * Orchestrates the whole lifecycle: load -> rewrite HTML -> store -> install
- * DNR rules -> open the package tab; plus expiry sweeps and session-rule
- * recovery after a browser restart.
+ * Orchestrates the whole lifecycle: load -> rewrite HTML -> store bytes in
+ * the file store -> install the package's single DNR redirect rule -> open
+ * the package tab; plus serve-time resolution for the router page, expiry
+ * sweeps and session-rule recovery after a browser restart.
  */
 export class CapsiumService {
   private readonly loader: PackageLoader;
@@ -67,6 +54,8 @@ export class CapsiumService {
   private readonly rules: DnrRuleManager;
   private readonly rewriter: HtmlRewriter;
   private readonly tabs: TabsPort;
+  private readonly fileStore: FileStorePort;
+  private readonly routerBaseUrl: string;
   private readonly now: () => number;
   private readonly maxAgeMs: number;
   /** Verified basic-auth credentials per package (§4b) — session-only. */
@@ -81,6 +70,8 @@ export class CapsiumService {
     this.rules = deps.rules;
     this.rewriter = deps.rewriter;
     this.tabs = deps.tabs;
+    this.fileStore = deps.fileStore;
+    this.routerBaseUrl = deps.routerBaseUrl;
     this.now = deps.now ?? Date.now;
     this.maxAgeMs = deps.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
   }
@@ -119,7 +110,9 @@ export class CapsiumService {
         manifest: pkg.manifest,
         routes: pkg.routes,
         storage: pkg.storage,
-        files: prepared.map((file) => file.path),
+        fileTypes: Object.fromEntries(
+          prepared.map((file) => [file.path, file.contentType]),
+        ),
         validity: pkg.validity,
         checksums: pkg.checksums,
         signature: pkg.signature,
@@ -131,6 +124,10 @@ export class CapsiumService {
     );
 
     try {
+      // Packaging errors surface at install, exactly where the data:-URI
+      // core threw while building rule specs.
+      const info = await this.mustGetInfo(capId);
+      validateRoutes(this.servingView(capId, info));
       await this.rebuildRules(capId);
     } catch (error) {
       // Roll back storage so a half-installed package never leaks.
@@ -146,7 +143,8 @@ export class CapsiumService {
    * Popup entry point (§4a): install a dependency .cap for an already-open
    * composite package. The dependency's guid must be declared in the
    * dependent's metadata; its exported content then serves as a lower
-   * read-only layer under the dependent's URL space.
+   * read-only layer under the dependent's URL space. Resolution is dynamic,
+   * so no rule rebuild is needed — new refs resolve immediately.
    */
   async addDependencyFromDataUri(
     parentCapId: string,
@@ -182,7 +180,9 @@ export class CapsiumService {
           manifest: pkg.manifest,
           routes: pkg.routes,
           storage: pkg.storage,
-          files: prepared.map((file) => file.path),
+          fileTypes: Object.fromEntries(
+            prepared.map((file) => [file.path, file.contentType]),
+          ),
           validity: pkg.validity,
           checksums: pkg.checksums,
           signature: pkg.signature,
@@ -196,15 +196,6 @@ export class CapsiumService {
       const previous = parentInfo.dependencies ?? {};
       parentInfo.dependencies = { ...previous, [guid]: depCapId };
       await this.store.updateInfo(parentCapId, parentInfo);
-      try {
-        await this.rebuildRules(parentCapId);
-      } catch (error) {
-        // Roll back: drop the dependency and restore the parent record.
-        await this.store.removePackage(depCapId);
-        parentInfo.dependencies = previous;
-        await this.store.updateInfo(parentCapId, parentInfo);
-        throw error;
-      }
 
       return { ok: true, info: await this.viewInfoFromStored(parentCapId) };
     } catch (error) {
@@ -218,7 +209,7 @@ export class CapsiumService {
     }
   }
 
-  /** Rewrite HTML files against their own in-package directory, then base64-encode. */
+  /** Rewrite HTML files against their own in-package directory, keep raw bytes. */
   private async prepareFiles(
     capId: string,
     pkg: LoadedPackage,
@@ -240,13 +231,13 @@ export class CapsiumService {
       prepared.push({
         path: file.path,
         contentType: file.contentType,
-        base64: encodeBase64(bytes),
+        bytes,
       });
     }
     return prepared;
   }
 
-  /** Remove packages older than maxAgeMs — both their storage AND their DNR rules. */
+  /** Remove packages older than maxAgeMs — storage, file bytes AND DNR rules. */
   async sweepExpired(): Promise<string[]> {
     const now = this.now();
     const index = await this.store.listIndex();
@@ -276,7 +267,7 @@ export class CapsiumService {
   /**
    * Service-worker startup: sweep expired packages, prune orphaned rules,
    * and rebuild session rules that vanished (session rules do not survive a
-   * browser restart; storage does).
+   * browser restart; storage and the file store do).
    */
   async onStartup(): Promise<void> {
     await this.sweepExpired();
@@ -297,17 +288,59 @@ export class CapsiumService {
     }
   }
 
-  /** Read all stored files of a package into a serving map. */
-  private async loadFiles(
-    capId: string,
-    paths: string[],
-  ): Promise<ServingFiles> {
-    const files: ServingFiles = new Map();
-    for (const path of paths) {
-      const file = await this.store.getFile(capId, path);
-      if (file) files.set(path, file);
+  /* ---------------------------------------------------------------- */
+  /* Serve-time resolution (router page)                               */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Router-page entry point: resolve URL paths under a package's origin to
+   * the stored files serving them (see lib/resolver.ts). When the package
+   * gates on basic auth (§4b) and no credentials verified this session,
+   * every path answers `locked` (the router renders the 401 body).
+   */
+  async resolve(capId: string, paths: string[]): Promise<ResolveResult[]> {
+    const info = await this.store.getInfo(capId);
+    if (!info) return paths.map((path) => ({ path, kind: 'not-found' }));
+
+    const basicAuth = info.authentication?.authentication.basicAuth;
+    if (basicAuth?.enabled === true && !this.sessions.has(capId)) {
+      return paths.map((path) => ({ path, kind: 'locked' }));
     }
-    return files;
+
+    const view = this.servingView(capId, info);
+    const dependencies = await this.dependencyServingViews(info);
+    return paths.map((path): ResolveResult => {
+      const resolution = resolveUrlPath(view, dependencies, path);
+      if (resolution.kind === 'not-found') return { path, kind: 'not-found' };
+      return {
+        path,
+        kind: 'found',
+        store: this.fileStore.kind,
+        fileCapId: resolution.file.capId,
+        filePath: resolution.file.path,
+        contentType: resolution.file.contentType,
+        ...(resolution.file.bodyOverride === undefined
+          ? {}
+          : { bodyOverride: resolution.file.bodyOverride }),
+        ...(resolution.file.responseHeaders === undefined
+          ? {}
+          : { responseHeaders: resolution.file.responseHeaders }),
+      };
+    });
+  }
+
+  /** The package's serving view over its stored metadata (byte-free). */
+  private servingView(
+    capId: string,
+    info: StoredPackageInfo,
+  ): PackageServingView {
+    return {
+      capId,
+      routes: info.routes,
+      storage: info.storage,
+      tombstones: info.tombstones ?? {},
+      fileTypes: info.fileTypes,
+    };
   }
 
   /** Installed dependencies of a package as serving views (§4a). */
@@ -321,51 +354,39 @@ export class CapsiumService {
       views.push({
         guid,
         manifest: depInfo.manifest ?? { resources: {} },
-        routes: depInfo.routes,
-        storage: depInfo.storage,
-        tombstones: depInfo.tombstones ?? {},
-        files: await this.loadFiles(depCapId, depInfo.files),
-        filePaths: depInfo.files,
+        filePaths: Object.keys(depInfo.fileTypes),
+        ...this.servingView(depCapId, depInfo),
       });
     }
     return views;
   }
 
   /**
-   * (Re)build a package's DNR rules: its own routes plus inherited
-   * dependency routes (§4a), gated on basic auth (§4b) — locked (401 body
-   * everywhere) until credentials verify in this session, afterwards the
-   * Authorization header is attached package-wide.
+   * (Re)install the package's session rules: the single router redirect
+   * rule, plus the §4b Authorization header rule once credentials verified
+   * this session. Dynamic resolution means route/auth-lock changes no
+   * longer require rule rebuilds.
    */
   private async rebuildRules(capId: string): Promise<void> {
     const info = await this.store.getInfo(capId);
     if (!info) throw new Error(`Package ${capId} is not installed`);
-    let specs = buildCompositeRuleSpecs(
-      {
-        routes: info.routes,
-        storage: info.storage,
-        tombstones: info.tombstones ?? {},
-        files: await this.loadFiles(capId, info.files),
-      },
-      await this.dependencyServingViews(info),
-    );
     const basicAuth = info.authentication?.authentication.basicAuth;
-    if (basicAuth?.enabled === true) {
-      const credentials = this.sessions.get(capId);
-      if (credentials === undefined) {
-        specs = lockRuleSpecs(specs);
-      } else {
-        specs.push(authorizationHeaderSpec(credentials));
-      }
-    }
-    await this.rules.installPackageRules(capId, specs);
+    const credentials = this.sessions.get(capId);
+    const authorization =
+      basicAuth?.enabled === true && credentials !== undefined
+        ? basicAuthorizationHeader(credentials)
+        : undefined;
+    await this.rules.installPackageRules(capId, {
+      routerBaseUrl: this.routerBaseUrl,
+      ...(authorization === undefined ? {} : { authorization }),
+    });
   }
 
   /**
    * Popup entry point (§4b): verify basic-auth credentials against the
    * package's htpasswd file, once per session. On success the package's
-   * rules unlock and its tab reopens; on failure the 401 body keeps being
-   * served.
+   * Authorization rule is attached and its tab reopens; on failure the
+   * resolver keeps answering `locked`.
    */
   async authenticate(
     capId: string,
@@ -378,15 +399,18 @@ export class CapsiumService {
       if (!info || basicAuth?.enabled !== true) {
         return { ok: false, error: 'This package does not require basic auth' };
       }
-      const htpasswdFile = await this.store.getFile(capId, basicAuth.passwdFile);
-      if (!htpasswdFile) {
+      const htpasswdBytes = await this.fileStore.get(
+        capId,
+        basicAuth.passwdFile,
+      );
+      if (!htpasswdBytes) {
         return {
           ok: false,
           error: `basicAuth passwdFile "${basicAuth.passwdFile}" is not stored`,
         };
       }
       const result = await verifyHtpasswd(
-        new TextDecoder().decode(decodeBase64(htpasswdFile.base64)),
+        new TextDecoder().decode(htpasswdBytes),
         username,
         password,
       );
@@ -413,8 +437,7 @@ export class CapsiumService {
 
   /** View info rebuilt from storage (after dependency changes). */
   private async viewInfoFromStored(capId: string): Promise<PackageViewInfo> {
-    const info = await this.store.getInfo(capId);
-    if (!info) throw new Error(`Package ${capId} is not installed`);
+    const info = await this.mustGetInfo(capId);
     return {
       capId,
       name: info.metadata.name,
@@ -433,6 +456,12 @@ export class CapsiumService {
       dependencies: await this.dependencyStatuses(info),
       ...authenticationSpread(info.authentication, this.sessions.has(capId)),
     };
+  }
+
+  private async mustGetInfo(capId: string): Promise<StoredPackageInfo> {
+    const info = await this.store.getInfo(capId);
+    if (!info) throw new Error(`Package ${capId} is not installed`);
+    return info;
   }
 
   /** Popup dependency list: every declared guid with its install status. */

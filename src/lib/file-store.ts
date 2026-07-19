@@ -151,7 +151,7 @@ export interface CacheLike {
   put(request: string, response: Response): Promise<void>;
   match(request: string): Promise<Response | undefined>;
   delete(request: string): Promise<boolean>;
-  keys(): Promise<Array<{ url: string }>>;
+  keys(): Promise<ReadonlyArray<{ url: string }>>;
 }
 
 /** Synthetic, never-fetched URL keying one stored file. */

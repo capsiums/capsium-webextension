@@ -31,11 +31,11 @@ interface DnrRuleBase {
   };
 }
 
-/** A declarativeNetRequest session rule redirecting to a data: URI. */
+/** A declarativeNetRequest session rule redirecting via regex substitution. */
 export interface DnrRedirectRule extends DnrRuleBase {
   action: {
     type: 'redirect';
-    redirect: { url: string };
+    redirect: { regexSubstitution: string };
   };
 }
 
