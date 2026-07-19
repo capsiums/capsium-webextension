@@ -1,7 +1,14 @@
+import { encodeBase64 } from './base64';
 import type { DnrPort, DnrRule, StoragePort } from './ports';
 
 /**
  * declarativeNetRequest session-rule management.
+ *
+ * ONE redirect rule per package: every URL under `https://<capId>.cap` is
+ * redirected to the extension's router page (the requested path is carried
+ * in the URL fragment via regex substitution), replacing the data:-URI-era
+ * per-route rules and their ~5k session-rule budget pressure entirely.
+ * Route matching happens at serve time in the resolver (lib/resolver.ts).
  *
  * Rule IDs are namespaced per package: a deterministic block of IDs is
  * derived from the capId (FNV-1a hash), so two packages can never clobber
@@ -30,22 +37,6 @@ export const RULE_RESOURCE_TYPES = [
   'other',
 ] as const;
 
-/** One served route: package URL path -> data: URI target (+ optional headers). */
-export interface RuleSpec {
-  path: string;
-  dataUri: string;
-  /** DNR priority (higher wins when several rules match); default 1. */
-  priority?: number;
-  /** Request headers attached via a companion modifyHeaders rule (§4a). */
-  requestHeaders?: Record<string, string>;
-  /** Response headers attached via a companion modifyHeaders rule (§4a). */
-  responseHeaders?: Record<string, string>;
-  /** Match every URL under `path` (default: exact anchored match). */
-  prefixMatch?: boolean;
-  /** Emit only the modifyHeaders companion, no redirect (§4b auth header). */
-  headersOnly?: boolean;
-}
-
 /** 32-bit FNV-1a — stable across sessions, good enough for block placement. */
 export function hashCapId(capId: string, salt: number): number {
   let hash = 0x811c9dc5;
@@ -66,60 +57,83 @@ export function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** §4b: Authorization header value for verified basic-auth credentials. */
+export function basicAuthorizationHeader(credentials: {
+  username: string;
+  password: string;
+}): string {
+  const token = encodeBase64(
+    new TextEncoder().encode(`${credentials.username}:${credentials.password}`),
+  );
+  return `Basic ${token}`;
+}
+
+/** Everything needed to (re)build one package's session rules. */
+export interface PackageRuleOptions {
+  /**
+   * Absolute extension URL of the router page
+   * (`browser.runtime.getURL('/router.html')`), the redirect target.
+   */
+  routerBaseUrl: string;
+  /**
+   * §4b: once credentials verified in this session, attach
+   * `Authorization: Basic …` package-wide (see README for the caveat).
+   */
+  authorization?: string;
+}
+
 /**
- * Build the session rules for a package. The regexFilter is fully anchored,
- * so `/index` can never shadow `/index.html` (the original substring
- * urlFilter over-matched). Specs carrying headers (§4a route inheritance)
- * additionally emit a companion modifyHeaders rule.
+ * The package's session rules:
+ *
+ *  1. ONE redirect rule — `https://<capId>.cap<path>` ->
+ *     `<routerBaseUrl>#/serve/<capId><path>` (the path is captured by group
+ *     1 and carried in the fragment; query strings are not matched and stay
+ *     appended after the fragment, where the router ignores them). Matches
+ *     all resource types the data:-URI rules did.
+ *  2. optionally, the §4b modifyHeaders rule attaching the Authorization
+ *     header package-wide after authentication.
  */
-export function buildRules(
+export function buildPackageRules(
   capId: string,
-  specs: RuleSpec[],
+  options: PackageRuleOptions,
   salt = 0,
 ): DnrRule[] {
-  const rules: DnrRule[] = [];
-  let nextId = ruleBlockStart(capId, salt);
-  for (const spec of specs) {
-    const condition = {
-      regexFilter: spec.prefixMatch === true
-        ? `^https://${escapeRegex(capId)}\\.cap${escapeRegex(spec.path)}`
-        : `^https://${escapeRegex(capId)}\\.cap${escapeRegex(spec.path)}(\\?.*)?$`,
-      resourceTypes: [...RULE_RESOURCE_TYPES],
-    };
-    if (spec.headersOnly !== true) {
-      rules.push({
-        id: nextId,
-        priority: spec.priority ?? 1,
-        action: { type: 'redirect', redirect: { url: spec.dataUri } },
-        condition,
-      });
-      nextId += 1;
-    }
-    if (spec.requestHeaders !== undefined || spec.responseHeaders !== undefined) {
-      rules.push({
-        id: nextId,
-        priority: spec.priority ?? 1,
-        action: {
-          type: 'modifyHeaders',
-          ...(spec.requestHeaders === undefined
-            ? {}
-            : {
-                requestHeaders: Object.entries(spec.requestHeaders).map(
-                  ([header, value]) => ({ header, operation: 'set' as const, value }),
-                ),
-              }),
-          ...(spec.responseHeaders === undefined
-            ? {}
-            : {
-                responseHeaders: Object.entries(spec.responseHeaders).map(
-                  ([header, value]) => ({ header, operation: 'set' as const, value }),
-                ),
-              }),
+  const firstId = ruleBlockStart(capId, salt);
+  const rules: DnrRule[] = [
+    {
+      id: firstId,
+      priority: 1,
+      action: {
+        type: 'redirect',
+        redirect: {
+          regexSubstitution: `${options.routerBaseUrl}#/serve/${capId}\\1`,
         },
-        condition,
-      });
-      nextId += 1;
-    }
+      },
+      condition: {
+        regexFilter: `^https://${escapeRegex(capId)}\\.cap(/[^?#]*)?`,
+        resourceTypes: [...RULE_RESOURCE_TYPES],
+      },
+    },
+  ];
+  if (options.authorization !== undefined) {
+    rules.push({
+      id: firstId + 1,
+      priority: 1,
+      action: {
+        type: 'modifyHeaders',
+        requestHeaders: [
+          {
+            header: 'Authorization',
+            operation: 'set' as const,
+            value: options.authorization,
+          },
+        ],
+      },
+      condition: {
+        regexFilter: `^https://${escapeRegex(capId)}\\.cap/`,
+        resourceTypes: [...RULE_RESOURCE_TYPES],
+      },
+    });
   }
   if (rules.length > RULE_BLOCK_SIZE) {
     throw new Error(
@@ -157,7 +171,7 @@ export class DnrRuleManager {
    */
   async installPackageRules(
     capId: string,
-    specs: RuleSpec[],
+    options: PackageRuleOptions,
   ): Promise<number[]> {
     const registry = await this.readRegistry();
     const foreignIds = new Set(
@@ -167,12 +181,12 @@ export class DnrRuleManager {
     );
 
     let salt = 0;
-    let rules = buildRules(capId, specs, salt);
+    let rules = buildPackageRules(capId, options, salt);
     while (rules.some((rule) => foreignIds.has(rule.id))) {
       salt += 1;
       if (salt > MAX_SALT)
         throw new Error('Could not allocate a free DNR rule ID block');
-      rules = buildRules(capId, specs, salt);
+      rules = buildPackageRules(capId, options, salt);
     }
 
     const ruleIds = rules.map((rule) => rule.id);

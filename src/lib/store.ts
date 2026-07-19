@@ -1,4 +1,4 @@
-import type { StoragePort } from './ports';
+import type { FileStorePort, StoragePort } from './ports';
 import type {
   AuthenticationFile,
   Manifest,
@@ -17,20 +17,19 @@ export interface IndexEntry {
   timeAdded: number;
 }
 
-/** A package file persisted in chrome.storage.local (uniform base64 — binary-safe). */
-export interface StoredFile {
-  contentType: string;
-  base64: string;
-}
-
 export interface StoredPackageInfo {
   metadata: Metadata;
-  /** Persisted for dependent-view (§4a) visibility checks at rebuild time. */
+  /** Persisted for dependent-view (§4a) visibility checks at resolve time. */
   manifest?: Manifest;
   routes: RoutesFile;
   storage: StorageFile | null;
-  /** Package-relative paths of the stored files. */
-  files: string[];
+  /**
+   * Stored file path -> content type. The key set is the package's stored
+   * path list (layered packages store raw paths, `<layer>/content/x.html`).
+   * Content types live here (not in the file store) so the resolver can
+   * answer without touching bytes.
+   */
+  fileTypes: Record<string, string>;
   validity: ContentValidity;
   checksums: 'verified' | 'absent';
   signature?: 'verified' | 'absent';
@@ -47,26 +46,31 @@ export interface StoredPackageInfo {
 export interface PreparedFile {
   path: string;
   contentType: string;
-  base64: string;
+  bytes: Uint8Array;
 }
 
 /** Files are written in small batches so a failure mid-install is recoverable. */
 const WRITE_BATCH_SIZE = 8;
 
 /**
- * chrome.storage.local persistence for installed packages.
+ * Persistence for installed packages, split by size:
+ *
+ *  - file BYTES go to the binary file store (OPFS / Cache API — see
+ *    lib/file-store.ts), one tree per package;
+ *  - chrome.storage.local keeps ONLY the index and per-package metadata
+ *    (no more base64 payloads, no more `unlimitedStorage`):
  *
  * Layout:
- *  - `capsium.index`                    -> IndexEntry[] (written LAST)
- *  - `capsium.pkg.<capId>.info`         -> StoredPackageInfo
- *  - `capsium.pkg.<capId>.file.<path>`  -> StoredFile
+ *  - `capsium.index`                -> IndexEntry[] (written LAST)
+ *  - `capsium.pkg.<capId>.info`     -> StoredPackageInfo
  *
- * install() is transactional: on any failure every key written so far is
- * removed again (rollback), so a partial install never leaks storage.
+ * install() is transactional: on any failure the file-store tree and the
+ * info key are removed again (rollback), so a partial install never leaks.
  */
 export class PackageStore {
   constructor(
     private readonly storage: StoragePort,
+    private readonly files: FileStorePort,
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -74,8 +78,9 @@ export class PackageStore {
     return `capsium.pkg.${capId}.info`;
   }
 
-  static fileKey(capId: string, path: string): string {
-    return `capsium.pkg.${capId}.file.${path}`;
+  /** The file-store backend holding this store's bytes. */
+  get fileStore(): FileStorePort {
+    return this.files;
   }
 
   async listIndex(): Promise<IndexEntry[]> {
@@ -89,23 +94,16 @@ export class PackageStore {
     info: StoredPackageInfo,
     files: PreparedFile[],
   ): Promise<void> {
-    const written: string[] = [];
     try {
       for (let i = 0; i < files.length; i += WRITE_BATCH_SIZE) {
-        const batch: Record<string, StoredFile> = {};
-        for (const file of files.slice(i, i + WRITE_BATCH_SIZE)) {
-          batch[PackageStore.fileKey(capId, file.path)] = {
-            contentType: file.contentType,
-            base64: file.base64,
-          };
-        }
-        await this.storage.set(batch);
-        written.push(...Object.keys(batch));
+        await Promise.all(
+          files
+            .slice(i, i + WRITE_BATCH_SIZE)
+            .map((file) => this.files.put(capId, file.path, file.bytes)),
+        );
       }
 
-      const infoKey = PackageStore.infoKey(capId);
-      await this.storage.set({ [infoKey]: info });
-      written.push(infoKey);
+      await this.storage.set({ [PackageStore.infoKey(capId)]: info });
 
       // The index is written last: a crashed install leaves no index entry,
       // so the package never becomes visible half-written.
@@ -120,27 +118,27 @@ export class PackageStore {
         [INDEX_KEY]: [...index.filter((item) => item.capId !== capId), entry],
       });
     } catch (error) {
-      await this.rollback(written);
+      await this.rollback(capId);
       throw error;
     }
   }
 
-  private async rollback(keys: string[]): Promise<void> {
-    if (keys.length === 0) return;
+  private async rollback(capId: string): Promise<void> {
     try {
-      await this.storage.remove(keys);
+      await this.files.removePackage(capId);
     } catch {
-      // Best effort: orphaned keys without an index entry are never served.
+      // Best effort: orphaned bytes without an index entry are never served.
+    }
+    try {
+      await this.storage.remove([PackageStore.infoKey(capId)]);
+    } catch {
+      // Best effort, same reasoning.
     }
   }
 
   async removePackage(capId: string): Promise<void> {
-    const info = await this.getInfo(capId);
-    const keys = [
-      PackageStore.infoKey(capId),
-      ...(info?.files.map((path) => PackageStore.fileKey(capId, path)) ?? []),
-    ];
-    await this.storage.remove(keys);
+    await this.files.removePackage(capId);
+    await this.storage.remove([PackageStore.infoKey(capId)]);
     const index = await this.listIndex();
     await this.storage.set({
       [INDEX_KEY]: index.filter((item) => item.capId !== capId),
@@ -157,12 +155,5 @@ export class PackageStore {
   /** Overwrite the stored package info (e.g. after a dependency was added). */
   async updateInfo(capId: string, info: StoredPackageInfo): Promise<void> {
     await this.storage.set({ [PackageStore.infoKey(capId)]: info });
-  }
-
-  async getFile(capId: string, path: string): Promise<StoredFile | null> {
-    const data = await this.storage.get([PackageStore.fileKey(capId, path)]);
-    const raw = data[PackageStore.fileKey(capId, path)];
-    if (typeof raw !== 'object' || raw === null) return null;
-    return raw as StoredFile;
   }
 }

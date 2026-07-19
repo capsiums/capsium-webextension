@@ -6,8 +6,8 @@ import { parseAuthentication } from '../src/lib/model';
 import { PackageLoader } from '../src/lib/package-loader';
 import { CapsiumService } from '../src/lib/background-service';
 import { PackageStore } from '../src/lib/store';
-import { DnrRuleManager } from '../src/lib/dnr';
-import { lockRuleSpecs, authorizationHeaderSpec, UNAUTHORIZED_BODY } from '../src/lib/serving';
+import { DnrRuleManager, basicAuthorizationHeader } from '../src/lib/dnr';
+import { UNAUTHORIZED_BODY } from '../src/lib/resolver';
 import { decodeBase64, encodeBase64 } from '../src/lib/base64';
 import { generatedFixtureBytes } from './helpers/fixtures';
 import {
@@ -17,8 +17,15 @@ import {
   AUTH_BCRYPT_USER,
   AUTH_BCRYPT_PASSWORD,
 } from './fixtures/global-setup';
-import { FakeDnr, FakeRewriter, FakeStorage, FakeTabs } from './helpers/fakes';
+import {
+  FakeDnr,
+  FakeFileStore,
+  FakeRewriter,
+  FakeStorage,
+  FakeTabs,
+} from './helpers/fakes';
 
+const ROUTER = 'chrome-extension://ext-id/router.html';
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -148,97 +155,91 @@ describe('PackageLoader — authentication.json', () => {
   });
 });
 
-describe('auth serving specs (§4b)', () => {
-  it('lockRuleSpecs serves the 401 body on every route', () => {
-    const locked = lockRuleSpecs([
-      { path: '/', dataUri: 'data:text/html;base64,QQ', priority: 2 },
-    ]);
-    expect(locked).toHaveLength(1);
-    expect(dec.decode(decodeBase64(locked[0]!.dataUri.split(',')[1] ?? ''))).toBe(
-      UNAUTHORIZED_BODY,
-    );
-    expect(locked[0]!.priority).toBe(2);
+describe('auth serving (§4b)', () => {
+  it('the 401 body text is stable and the gate is dynamic (no rule rewrite)', () => {
+    expect(UNAUTHORIZED_BODY).toBe('authentication required');
   });
 
-  it('authorizationHeaderSpec attaches Basic credentials package-wide', () => {
-    const spec = authorizationHeaderSpec({ username: 'alice', password: 'swordfish' });
-    expect(spec.prefixMatch).toBe(true);
-    expect(spec.headersOnly).toBe(true);
-    const token = spec.requestHeaders?.['Authorization'] ?? '';
-    expect(token.startsWith('Basic ')).toBe(true);
-    expect(dec.decode(decodeBase64(token.slice(6)))).toBe('alice:swordfish');
+  it('basicAuthorizationHeader attaches Basic credentials package-wide', () => {
+    const header = basicAuthorizationHeader({
+      username: 'alice',
+      password: 'swordfish',
+    });
+    expect(header.startsWith('Basic ')).toBe(true);
+    expect(dec.decode(decodeBase64(header.slice(6)))).toBe('alice:swordfish');
   });
 });
 
 describe('CapsiumService — basic auth flow', () => {
-  function makeService(shared?: { storage: FakeStorage; dnr: FakeDnr }) {
+  function makeService(shared?: {
+    storage: FakeStorage;
+    fileStore: FakeFileStore;
+    dnr: FakeDnr;
+  }) {
     const storage = shared?.storage ?? new FakeStorage();
+    const fileStore = shared?.fileStore ?? new FakeFileStore();
     const dnr = shared?.dnr ?? new FakeDnr();
     const tabs = new FakeTabs();
     const service = new CapsiumService({
       loader: new PackageLoader(),
-      store: new PackageStore(storage),
+      store: new PackageStore(storage, fileStore),
       rules: new DnrRuleManager(dnr, storage),
       rewriter: new FakeRewriter(),
       tabs,
+      fileStore,
+      routerBaseUrl: ROUTER,
     });
-    return { service, storage, dnr, tabs };
+    return { service, storage, fileStore, dnr, tabs };
   }
 
   const dataUri = `data:application/vnd.capsium.package;base64,${encodeBase64(
     generatedFixtureBytes(AUTH_CAP),
   )}`;
 
-  function servedBody(dnr: FakeDnr, path: string): string | undefined {
-    const marker = '\\.cap';
-    for (const rule of dnr.rules.values()) {
-      if (rule.action.type !== 'redirect') continue;
-      const filter = rule.condition.regexFilter;
-      const start = filter.indexOf(marker) + marker.length;
-      const end = filter.indexOf('(\\?.*)?$');
-      if (filter.slice(start, end).replace(/\\(.)/g, '$1') === path) {
-        return dec.decode(
-          decodeBase64(rule.action.redirect.url.split(',')[1] ?? ''),
-        );
-      }
-    }
-    return undefined;
-  }
-
-  it('locks with the 401 body until credentials verify (apr1)', async () => {
-    const { service, dnr, tabs } = makeService();
+  it('locks with the 401 gate until credentials verify (apr1)', async () => {
+    const { service, fileStore, dnr, tabs } = makeService();
     const opened = await service.openFromDataUri(dataUri);
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
+    const capId = opened.info.capId;
     expect(opened.info.authentication).toEqual({
       basicAuth: true,
       realm: 'capsium',
       authenticated: false,
     });
-    // Absent credentials → the 401 body is shown for package URLs.
-    expect(servedBody(dnr, '/')).toBe(UNAUTHORIZED_BODY);
+    // Absent credentials → every package URL resolves locked (401 body).
+    expect(await service.resolve(capId, ['/', '/style.css'])).toEqual([
+      { path: '/', kind: 'locked' },
+      { path: '/style.css', kind: 'locked' },
+    ]);
+    // Still just the one redirect rule — the gate is dynamic.
+    expect(dnr.rules.size).toBe(1);
 
     // Wrong credentials → error, still locked.
-    const wrong = await service.authenticate(
-      opened.info.capId,
-      AUTH_USER,
-      'wrong-password',
-    );
+    const wrong = await service.authenticate(capId, AUTH_USER, 'wrong-password');
     expect(wrong.ok).toBe(false);
     if (wrong.ok) return;
     expect(wrong.error).toMatch(/invalid username or password/i);
-    expect(servedBody(dnr, '/')).toBe(UNAUTHORIZED_BODY);
+    expect((await service.resolve(capId, ['/']))[0]?.kind).toBe('locked');
 
-    // Right credentials (apr1) → unlocked, Authorization attached, tab reopens.
-    const ok = await service.authenticate(
-      opened.info.capId,
-      AUTH_USER,
-      AUTH_PASSWORD,
-    );
+    // Right credentials (apr1) → unlocked, Authorization rule attached, tab
+    // reopens.
+    const ok = await service.authenticate(capId, AUTH_USER, AUTH_PASSWORD);
     expect(ok.ok).toBe(true);
     if (!ok.ok) return;
     expect(ok.info.authentication?.authenticated).toBe(true);
-    expect(servedBody(dnr, '/')).toContain('SECRET auth content');
+
+    const resolved = await service.resolve(capId, ['/']);
+    const root = resolved[0];
+    expect(root?.kind).toBe('found');
+    if (root?.kind === 'found') {
+      expect(root.contentType).toBe('text/html');
+      const bytes = await fileStore.get(root.fileCapId, root.filePath);
+      expect(dec.decode(bytes!)).toContain('SECRET auth content');
+    }
+
+    // The §4b Authorization rule rides alongside the redirect rule.
+    expect(dnr.rules.size).toBe(2);
     const authRule = [...dnr.rules.values()].find(
       (rule) => rule.action.type === 'modifyHeaders',
     );
@@ -248,9 +249,9 @@ describe('CapsiumService — basic auth flow', () => {
         (op) => op.header === 'Authorization',
       );
       expect(header).toBeDefined();
-      expect(
-        dec.decode(decodeBase64(header?.value?.slice(6) ?? '')),
-      ).toBe(`${AUTH_USER}:${AUTH_PASSWORD}`);
+      expect(dec.decode(decodeBase64(header?.value?.slice(6) ?? ''))).toBe(
+        `${AUTH_USER}:${AUTH_PASSWORD}`,
+      );
     }
     expect(tabs.created).toHaveLength(2); // opened + reopened after auth
   });
@@ -268,17 +269,30 @@ describe('CapsiumService — basic auth flow', () => {
   });
 
   it('locks again after a restart (session credentials are memory-only)', async () => {
-    const shared = { storage: new FakeStorage(), dnr: new FakeDnr() };
+    const shared = {
+      storage: new FakeStorage(),
+      fileStore: new FakeFileStore(),
+      dnr: new FakeDnr(),
+    };
     const first = makeService(shared);
     const opened = await first.service.openFromDataUri(dataUri);
     if (!opened.ok) throw new Error('open failed');
-    await first.service.authenticate(opened.info.capId, AUTH_USER, AUTH_PASSWORD);
-    expect(servedBody(shared.dnr, '/')).toContain('SECRET auth content');
+    const capId = opened.info.capId;
+    await first.service.authenticate(capId, AUTH_USER, AUTH_PASSWORD);
+    expect((await first.service.resolve(capId, ['/']))[0]?.kind).toBe('found');
 
     // Browser restart: session rules AND the in-memory session are gone.
     shared.dnr.clear();
     const second = makeService(shared);
     await second.service.onStartup();
-    expect(servedBody(shared.dnr, '/')).toBe(UNAUTHORIZED_BODY);
+    expect((await second.service.resolve(capId, ['/']))[0]?.kind).toBe(
+      'locked',
+    );
+    // Rebuilt without the Authorization header rule.
+    expect(
+      [...shared.dnr.rules.values()].every(
+        (rule) => rule.action.type === 'redirect',
+      ),
+    ).toBe(true);
   });
 });
