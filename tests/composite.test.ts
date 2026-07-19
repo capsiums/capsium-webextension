@@ -111,6 +111,20 @@ describe('dependency resource references', () => {
       parseDependencyResourceRef('capsium://other/x.js', [CORE_GUID]),
     ).toBeNull();
   });
+
+  it('parses full-guid references of any URI scheme', () => {
+    const guid = 'https://conformance.capsiums.dev/composite-core';
+    expect(
+      parseDependencyResourceRef(`${guid}/content/app.js`, [guid]),
+    ).toEqual({ guid, path: 'content/app.js' });
+    // ...and the capsium:// form of an https:// guid.
+    expect(
+      parseDependencyResourceRef(
+        'capsium://conformance.capsiums.dev/composite-core/content/app.js',
+        [guid],
+      ),
+    ).toEqual({ guid, path: 'content/app.js' });
+  });
 });
 
 describe('resolveDependencyResource', () => {
@@ -141,14 +155,14 @@ describe('resolveDependencyResource', () => {
         },
       }),
       fileTypes: {
-        'base/content/app.js': 'text/javascript',
-        'updates/content/app.js': 'text/javascript',
+        'base/app.js': 'text/javascript',
+        'updates/app.js': 'text/javascript',
       },
-      filePaths: ['base/content/app.js', 'updates/content/app.js'],
+      filePaths: ['base/app.js', 'updates/app.js'],
     };
     expect(resolveDependencyResource(layered, 'content/app.js')).toEqual({
       kind: 'found',
-      path: 'base/content/app.js',
+      path: 'base/app.js',
     });
   });
 });

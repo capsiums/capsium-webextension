@@ -9,11 +9,13 @@
  * read-only layer under the dependent's URL space; only `exported`
  * resources/routes are visible and its private layers do not apply (§5a).
  *
- * Dependency resource references look like
- * `capsium://<guid-without-scheme>/<package-relative path>` — with
- * dependency guid `capsium://example.com/core`, the reference
+ * Dependency resource references address an installed dependency's content
+ * as `<dependency-guid>/<package-relative path>` — with dependency guid
+ * `capsium://example.com/core`, the reference
  * `capsium://example.com/core/content/app.js` addresses `content/app.js`
- * of that dependency. The longest guid prefix wins.
+ * of that dependency. Guids of any URI scheme work the same way (the
+ * reference reactor's `https://…` guids included); the longest matching
+ * guid prefix wins.
  */
 import { resolveLayeredPath, storedFileView } from './layers';
 import type { Manifest, StorageFile } from './model';
@@ -45,25 +47,49 @@ export function isDependencyResourceRef(resource: string): boolean {
 }
 
 /**
- * Parse a `capsium://` resource reference against the known dependency
- * guids (longest guid prefix wins). Returns null when no guid matches.
+ * Parse a dependency resource reference against the known dependency guids
+ * (longest matching prefix wins). Two forms are recognized:
+ *
+ *  - the full-guid form `<guid>/<path>` with any URI-scheme guid, e.g.
+ *    `https://conformance.capsiums.dev/core/content/app.js` (the reference
+ *    reactor's form);
+ *  - the capsium:// form `capsium://<guid-without-scheme>/<path>`, e.g.
+ *    `capsium://example.com/core/content/app.js`.
+ *
+ * Returns null when no dependency guid prefixes the reference.
  */
 export function parseDependencyResourceRef(
   resource: string,
   dependencyGuids: Iterable<string>,
 ): DependencyResourceRef | null {
-  if (!isDependencyResourceRef(resource)) return null;
-  const rest = resource.slice(CAPSIUM_SCHEME.length);
   let best: DependencyResourceRef | null = null;
+  let bestLength = -1;
   for (const guid of dependencyGuids) {
-    const key = stripScheme(guid);
-    if (rest.startsWith(`${key}/`) && rest.length > key.length + 1) {
-      if (best === null || key.length > stripScheme(best.guid).length) {
-        best = { guid, path: rest.slice(key.length + 1) };
+    for (const key of guidPrefixes(resource, guid)) {
+      if (
+        resource.startsWith(`${key}/`) &&
+        resource.length > key.length + 1 &&
+        key.length > bestLength
+      ) {
+        best = { guid, path: resource.slice(key.length + 1) };
+        bestLength = key.length;
       }
     }
   }
   return best;
+}
+
+/**
+ * The prefixes under which `resource` may address `guid`: the full guid
+ * itself, plus the scheme-stripped capsium:// form for capsium://
+ * references.
+ */
+function guidPrefixes(resource: string, guid: string): string[] {
+  const prefixes = [guid];
+  if (resource.startsWith(CAPSIUM_SCHEME)) {
+    prefixes.push(`${CAPSIUM_SCHEME}${stripScheme(guid)}`);
+  }
+  return prefixes;
 }
 
 /** The stored pieces of an installed dependency needed for serving. */

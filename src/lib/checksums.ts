@@ -20,9 +20,20 @@ export interface ChecksumFailure {
 }
 
 /**
- * Verify that every file (except security.json itself and signature.sig —
- * the signature can never be checksum-covered, §6a) has a checksum and
- * that all checksums match. Returns the list of failures; empty = valid.
+ * True when a package-relative path has a dotfile segment. The reference
+ * packager's Dir.glob-based file enumeration never sees dotfiles, so they
+ * are never checksum-covered (e.g. layer `.capsium-tombstones` markers) —
+ * verifying implementations must exclude them the same way.
+ */
+function isDotfilePath(path: string): boolean {
+  return path.split('/').some((segment) => segment.startsWith('.'));
+}
+
+/**
+ * Verify that every checksum-covered file matches and that every file
+ * (except security.json itself, signature.sig — the signature can never be
+ * checksum-covered, §6a — and dotfiles, which the reference packager never
+ * covers) has a checksum. Returns the list of failures; empty = valid.
  */
 export async function verifyChecksums(
   files: Map<string, Uint8Array>,
@@ -33,7 +44,12 @@ export async function verifyChecksums(
   for (const [path, bytes] of [...files.entries()].sort(([a], [b]) =>
     a.localeCompare(b),
   )) {
-    if (path === 'security.json' || path === SIGNATURE_FILE) continue;
+    if (
+      path === 'security.json' ||
+      path === SIGNATURE_FILE ||
+      isDotfilePath(path)
+    )
+      continue;
     const expected = checksums[path];
     if (expected === undefined) {
       failures.push({ path, reason: 'missing-checksum' });

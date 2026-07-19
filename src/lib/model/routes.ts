@@ -10,7 +10,7 @@ import type { StorageFile } from './storage';
  * objects. Also accepted on read:
  *  - the standard's object-keyed-by-path form;
  *  - the legacy gem form where a route is `{path, target: {file}}` with
- *    `file` relative to content/.
+ *    `file` relative to content/, or `{path, target: {dataset}}`.
  *
  * Route kinds are MECE, discriminated by key: static (`resource`), dataset
  * (`dataset`), dynamic handler (`method` + `handler`, accepted and ignored —
@@ -77,7 +77,8 @@ export type Route = z.infer<typeof routeSchema>;
 export type RoutesFile = z.infer<typeof routesFileSchema>;
 
 const legacyTargetSchema = z.looseObject({
-  file: z.string().min(1),
+  file: z.string().min(1).optional(),
+  dataset: z.string().min(1).optional(),
 });
 
 const legacyRouteSchema = z.looseObject({
@@ -85,15 +86,25 @@ const legacyRouteSchema = z.looseObject({
   target: legacyTargetSchema,
 });
 
-/** Legacy gem routes: {path, target: {file}} with file relative to content/. */
+/**
+ * Legacy gem routes: {path, target: {file}} with file relative to content/,
+ * or {path, target: {dataset}} for a dataset route. Targets with neither
+ * key are passed through untouched (the canonical union rejects them).
+ */
 function normalizeLegacyRoute(
   route: z.infer<typeof legacyRouteSchema>,
-): StaticRoute {
+): StaticRoute | DatasetRoute | unknown {
   const file = route.target.file;
-  return {
-    path: route.path,
-    resource: file.startsWith('content/') ? file : `content/${file}`,
-  };
+  if (file !== undefined) {
+    return {
+      path: route.path,
+      resource: file.startsWith('content/') ? file : `content/${file}`,
+    };
+  }
+  if (route.target.dataset !== undefined) {
+    return { path: route.path, dataset: route.target.dataset };
+  }
+  return route;
 }
 
 /**
