@@ -7,6 +7,7 @@ import type { ContentValidity } from './package-loader';
 
 export const OPEN_CAP_ACTION = 'openCapFile';
 export const ADD_DEPENDENCY_ACTION = 'addDependencyCap';
+export const AUTHENTICATE_ACTION = 'authenticatePackage';
 export const REWRITE_REQUEST_TYPE = 'capsium.rewriteHtml';
 export const REWRITE_RESPONSE_TYPE = 'capsium.rewriteHtml.result';
 
@@ -46,6 +47,27 @@ export function isAddDependencyRequest(
     record['action'] === ADD_DEPENDENCY_ACTION &&
     typeof record['parentCapId'] === 'string' &&
     typeof record['dataURI'] === 'string'
+  );
+}
+
+/** popup -> background: basic-auth credentials for a package (§4b). */
+export interface AuthenticateRequest {
+  action: typeof AUTHENTICATE_ACTION;
+  capId: string;
+  username: string;
+  password: string;
+}
+
+export function isAuthenticateRequest(
+  message: unknown,
+): message is AuthenticateRequest {
+  if (typeof message !== 'object' || message === null) return false;
+  const record = message as Record<string, unknown>;
+  return (
+    record['action'] === AUTHENTICATE_ACTION &&
+    typeof record['capId'] === 'string' &&
+    typeof record['username'] === 'string' &&
+    typeof record['password'] === 'string'
   );
 }
 
@@ -123,6 +145,12 @@ export interface PackageViewInfo {
   signature: 'verified' | 'absent';
   /** Declared dependencies with their in-session install status (§4a). */
   dependencies: DependencyViewInfo[];
+  /** Basic-auth state (§4b); present only when the package enables it. */
+  authentication?: {
+    basicAuth: boolean;
+    realm: string;
+    authenticated: boolean;
+  };
 }
 
 /** background -> popup. */

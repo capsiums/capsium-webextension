@@ -163,5 +163,39 @@ export function renderPackageInfo(
     }
   }
 
+  // Basic auth (§4b): credentials are asked once per session.
+  if (info.authentication?.basicAuth === true) {
+    box.append(el(doc, 'h3', 'Authentication'));
+    if (info.authentication.authenticated) {
+      box.append(el(doc, 'p', 'Credentials verified for this session.'));
+    } else {
+      box.append(
+        el(
+          doc,
+          'p',
+          `This package requires basic auth (realm "${info.authentication.realm}"). Until then it shows the 401 body.`,
+        ),
+      );
+      const form = el(doc, 'form') as HTMLFormElement;
+      form.id = 'authForm';
+      const user = el(doc, 'input') as HTMLInputElement;
+      user.id = 'authUser';
+      user.type = 'text';
+      user.placeholder = 'Username';
+      user.autocomplete = 'username';
+      user.required = true;
+      const pass = el(doc, 'input') as HTMLInputElement;
+      pass.id = 'authPass';
+      pass.type = 'password';
+      pass.placeholder = 'Password';
+      pass.autocomplete = 'current-password';
+      pass.required = true;
+      const submit = el(doc, 'button', 'Sign in') as HTMLButtonElement;
+      submit.type = 'submit';
+      form.append(user, pass, submit);
+      box.append(form);
+    }
+  }
+
   container.replaceChildren(box);
 }

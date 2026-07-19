@@ -6,14 +6,18 @@ import {
 } from './store';
 import { DnrRuleManager, type RuleSpec } from './dnr';
 import { baseUrlForResource } from './html-rewrite';
-import { parseDataUri, encodeBase64 } from './base64';
+import { parseDataUri, encodeBase64, decodeBase64 } from './base64';
 import { mergedPathFor } from './layers';
 import {
+  authorizationHeaderSpec,
   buildCompositeRuleSpecs,
   buildOwnRuleSpecs,
+  lockRuleSpecs,
   type InstalledDependencyView,
   type ServingFiles,
 } from './serving';
+import { verifyHtpasswd } from './auth/htpasswd';
+import { DEFAULT_BASIC_REALM, type AuthenticationFile } from './model';
 import type { HtmlRewriter, TabsPort } from './ports';
 import type { RoutesFile, StorageFile } from './model';
 import type {
@@ -65,6 +69,11 @@ export class CapsiumService {
   private readonly tabs: TabsPort;
   private readonly now: () => number;
   private readonly maxAgeMs: number;
+  /** Verified basic-auth credentials per package (§4b) — session-only. */
+  private readonly sessions = new Map<
+    string,
+    { username: string; password: string }
+  >();
 
   constructor(deps: CapsiumServiceDeps) {
     this.loader = deps.loader;
@@ -116,18 +125,13 @@ export class CapsiumService {
         signature: pkg.signature,
         tombstones: pkg.tombstones,
         dependencies: {},
+        authentication: pkg.authentication,
       },
       prepared,
     );
 
     try {
-      const specs = buildRuleSpecs(
-        pkg.routes,
-        new Map(prepared.map((file) => [file.path, file])),
-        pkg.storage,
-        pkg.tombstones,
-      );
-      await this.rules.installPackageRules(capId, specs);
+      await this.rebuildRules(capId);
     } catch (error) {
       // Roll back storage so a half-installed package never leaks.
       await this.store.removePackage(capId);
@@ -184,6 +188,7 @@ export class CapsiumService {
           signature: pkg.signature,
           tombstones: pkg.tombstones,
           dependencyOf: { parent: parentCapId, guid },
+          authentication: pkg.authentication,
         },
         prepared,
       );
@@ -261,6 +266,7 @@ export class CapsiumService {
       }
     }
     for (const capId of removed) {
+      this.sessions.delete(capId);
       await this.rules.removePackageRules(capId);
       await this.store.removePackage(capId);
     }
@@ -325,11 +331,16 @@ export class CapsiumService {
     return views;
   }
 
-  /** (Re)build a package's DNR rules, including inherited dependency routes. */
+  /**
+   * (Re)build a package's DNR rules: its own routes plus inherited
+   * dependency routes (§4a), gated on basic auth (§4b) — locked (401 body
+   * everywhere) until credentials verify in this session, afterwards the
+   * Authorization header is attached package-wide.
+   */
   private async rebuildRules(capId: string): Promise<void> {
     const info = await this.store.getInfo(capId);
     if (!info) throw new Error(`Package ${capId} is not installed`);
-    const specs = buildCompositeRuleSpecs(
+    let specs = buildCompositeRuleSpecs(
       {
         routes: info.routes,
         storage: info.storage,
@@ -338,7 +349,66 @@ export class CapsiumService {
       },
       await this.dependencyServingViews(info),
     );
+    const basicAuth = info.authentication?.authentication.basicAuth;
+    if (basicAuth?.enabled === true) {
+      const credentials = this.sessions.get(capId);
+      if (credentials === undefined) {
+        specs = lockRuleSpecs(specs);
+      } else {
+        specs.push(authorizationHeaderSpec(credentials));
+      }
+    }
     await this.rules.installPackageRules(capId, specs);
+  }
+
+  /**
+   * Popup entry point (§4b): verify basic-auth credentials against the
+   * package's htpasswd file, once per session. On success the package's
+   * rules unlock and its tab reopens; on failure the 401 body keeps being
+   * served.
+   */
+  async authenticate(
+    capId: string,
+    username: string,
+    password: string,
+  ): Promise<OpenCapResponse> {
+    try {
+      const info = await this.store.getInfo(capId);
+      const basicAuth = info?.authentication?.authentication.basicAuth;
+      if (!info || basicAuth?.enabled !== true) {
+        return { ok: false, error: 'This package does not require basic auth' };
+      }
+      const htpasswdFile = await this.store.getFile(capId, basicAuth.passwdFile);
+      if (!htpasswdFile) {
+        return {
+          ok: false,
+          error: `basicAuth passwdFile "${basicAuth.passwdFile}" is not stored`,
+        };
+      }
+      const result = await verifyHtpasswd(
+        new TextDecoder().decode(decodeBase64(htpasswdFile.base64)),
+        username,
+        password,
+      );
+      if (result.kind === 'unsupported-hash') {
+        return {
+          ok: false,
+          error: `Unsupported htpasswd hash type "${result.hashType}" (supported: bcrypt, apr1)`,
+        };
+      }
+      if (result.kind !== 'ok') {
+        return { ok: false, error: 'Invalid username or password' };
+      }
+      this.sessions.set(capId, { username, password });
+      await this.rebuildRules(capId);
+      await this.tabs.create({ url: `https://${capId}.cap/` });
+      return { ok: true, info: await this.viewInfoFromStored(capId) };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /** View info rebuilt from storage (after dependency changes). */
@@ -361,6 +431,7 @@ export class CapsiumService {
       checksums: info.checksums,
       signature: info.signature ?? 'absent',
       dependencies: await this.dependencyStatuses(info),
+      ...authenticationSpread(info.authentication, this.sessions.has(capId)),
     };
   }
 
@@ -407,6 +478,7 @@ export class CapsiumService {
       dependencies: Object.entries(pkg.metadata.dependencies).map(
         ([guid, range]) => ({ guid, range, status: 'missing' as const }),
       ),
+      ...authenticationSpread(pkg.authentication, false),
     };
   }
 }
@@ -416,4 +488,20 @@ function toRouteView(route: RoutesFile['routes'][number]): RouteView {
   if ('dataset' in route)
     return { path: route.path, target: `dataset:${route.dataset}` };
   return { path: route.path, target: `${route.method} ${route.handler}` };
+}
+
+/** Popup auth view (§4b): present only when basicAuth is enabled. */
+function authenticationSpread(
+  authentication: AuthenticationFile | null | undefined,
+  authenticated: boolean,
+): Pick<PackageViewInfo, 'authentication'> {
+  const basic = authentication?.authentication.basicAuth;
+  if (basic?.enabled !== true) return {};
+  return {
+    authentication: {
+      basicAuth: true,
+      realm: basic.realm ?? DEFAULT_BASIC_REALM,
+      authenticated,
+    },
+  };
 }

@@ -192,6 +192,45 @@ export function buildDependencyRuleSpecs(
 export const OWN_PRIORITY = 2;
 export const DEPENDENCY_PRIORITY = 1;
 
+/** §4b: body shown for every package URL until basic-auth credentials verify. */
+export const UNAUTHORIZED_BODY = 'authentication required';
+
+const unauthorizedDataUri = `data:text/plain;base64,${encodeBase64(new TextEncoder().encode(UNAUTHORIZED_BODY))}`;
+
+/**
+ * Locked variants of a package's specs (§4b basicAuth, no verified session
+ * yet): same paths/priorities, but every route serves the 401 body and no
+ * headers are attached.
+ */
+export function lockRuleSpecs(specs: RuleSpec[]): RuleSpec[] {
+  return specs.map((spec) => ({
+    path: spec.path,
+    dataUri: unauthorizedDataUri,
+    ...(spec.priority === undefined ? {} : { priority: spec.priority }),
+  }));
+}
+
+/**
+ * The package-wide Authorization header rule (§4b): after credentials
+ * verify, the serving layer attaches `Authorization: Basic …` to every
+ * request under the package's origin.
+ */
+export function authorizationHeaderSpec(credentials: {
+  username: string;
+  password: string;
+}): RuleSpec {
+  const token = encodeBase64(
+    new TextEncoder().encode(`${credentials.username}:${credentials.password}`),
+  );
+  return {
+    path: '/',
+    dataUri: '',
+    prefixMatch: true,
+    headersOnly: true,
+    requestHeaders: { Authorization: `Basic ${token}` },
+  };
+}
+
 /**
  * Specs for a (possibly composite) package: its own routes at a higher
  * priority plus every installed dependency's exported routes as a lower

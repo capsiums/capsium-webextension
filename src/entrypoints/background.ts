@@ -8,7 +8,11 @@ import {
   OffscreenHtmlRewriter,
 } from '../lib/offscreen-rewriter';
 import { CapsiumService, SWEEP_ALARM_NAME } from '../lib/background-service';
-import { isAddDependencyRequest, isOpenCapRequest } from '../lib/messages';
+import {
+  isAddDependencyRequest,
+  isAuthenticateRequest,
+  isOpenCapRequest,
+} from '../lib/messages';
 import type {
   DnrPort,
   HtmlRewriter,
@@ -129,6 +133,13 @@ export default defineBackground(() => {
         message.parentCapId,
         message.dataURI,
         message.privateKey,
+      );
+    }
+    if (isAuthenticateRequest(message)) {
+      return service.authenticate(
+        message.capId,
+        message.username,
+        message.password,
       );
     }
     return undefined;

@@ -2,6 +2,7 @@ import browser from 'webextension-polyfill';
 import {
   OPEN_CAP_ACTION,
   ADD_DEPENDENCY_ACTION,
+  AUTHENTICATE_ACTION,
   isOpenCapResponse,
   type PackageViewInfo,
 } from '../../lib/messages';
@@ -107,6 +108,54 @@ input.addEventListener('change', () => {
   };
   reader.onerror = () => renderError(container(), 'Failed to read the file');
   reader.readAsDataURL(file);
+});
+
+// Basic-auth form is rendered dynamically (§4b) — delegate the submit event.
+packageInfo.addEventListener('submit', (event) => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || form.id !== 'authForm') return;
+  event.preventDefault();
+  if (currentCapId === null) return;
+
+  const user = document.getElementById('authUser');
+  const pass = document.getElementById('authPass');
+  if (
+    !(user instanceof HTMLInputElement) ||
+    !(pass instanceof HTMLInputElement)
+  ) {
+    return;
+  }
+
+  const capId = currentCapId;
+  renderBusy(container());
+  browser.runtime
+    .sendMessage({
+      action: AUTHENTICATE_ACTION,
+      capId,
+      username: user.value,
+      password: pass.value,
+    })
+    .then((response: unknown) => {
+      if (!isOpenCapResponse(response)) {
+        renderError(container(), 'No response from the background worker');
+        return;
+      }
+      if (response.ok) {
+        showInfo(response.info);
+      } else if (lastInfo !== null) {
+        renderPackageInfo(container(), lastInfo, response.error);
+      } else {
+        renderError(container(), response.error);
+      }
+    })
+    .catch((error: unknown) => {
+      renderError(
+        container(),
+        error instanceof Error
+          ? error.message
+          : 'Failed to contact the background worker',
+      );
+    });
 });
 
 // Dependency file input is rendered dynamically (§4a) — delegate the event.
