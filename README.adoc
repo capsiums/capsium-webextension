@@ -100,8 +100,9 @@ npm run zip         # distributable zips in .output/
 `src/lib/` is pure and unit-tested separately from the browser glue:
 
 * `model/` — zod schemas (single source of truth) for metadata / manifest /
-  routes / storage / security, legacy normalization, auto-generation.
-  Should later converge on `@capsium/core` (capsium-js) once published.
+  routes / storage / security / encryption / authentication, legacy
+  normalization, auto-generation. Should later converge on `@capsium/core`
+  (capsium-js) once published.
 * `package-loader.ts` — .cap → validated, normalized in-memory package.
 * `signatures.ts` / `encryption.ts` — §6a signature and §6b decryption
   gates (WebCrypto).

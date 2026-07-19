@@ -7,7 +7,7 @@ export default defineConfig({
   manifest: ({ browser, manifestVersion }) => {
     const base = {
       name: 'Capsium Viewer',
-      version: '1.0.0',
+      version: '0.2.0',
       description: 'Load a .cap Capsium package and render it in the browser.',
       content_security_policy: {
         extension_pages: "script-src 'self'; object-src 'self'",
