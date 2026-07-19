@@ -65,6 +65,24 @@ export interface TabsPort {
   create(options: { url: string }): Promise<void>;
 }
 
+/**
+ * Binary-safe persistence for package file bytes (the serving store).
+ *
+ * Implementations: OPFS (primary — raw bytes, cheap for large trees) with a
+ * Cache API fallback (request/response-shaped, available everywhere a
+ * service worker runs). Content types are NOT stored here — they live in the
+ * package index metadata (chrome.storage.local) and travel with resolutions.
+ */
+export interface FileStorePort {
+  /** Which backend holds the bytes; resolutions carry it to the router. */
+  readonly kind: 'opfs' | 'cache';
+  put(capId: string, path: string, bytes: Uint8Array): Promise<void>;
+  /** Bytes of one stored file, or null when absent. */
+  get(capId: string, path: string): Promise<Uint8Array | null>;
+  /** Drop a package's whole file tree (expiry / rollback). */
+  removePackage(capId: string): Promise<void>;
+}
+
 /** Minimal chrome.offscreen surface (Chrome-only; absent in Firefox). */
 export interface OffscreenPort {
   hasDocument(): Promise<boolean>;
