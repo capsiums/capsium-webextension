@@ -228,7 +228,10 @@ the DI ports to `webextension-polyfill` / `chrome.*`.
    not). Firefox has no manifest sandbox pages (the iframe `sandbox`
    attribute provides the opaque origin) and its MV2 CSP validation
    forbids `'unsafe-inline'` — packaged EXTERNAL (blob:) scripts run on
-   Firefox, packaged INLINE scripts are blocked there.
+   Firefox, packaged INLINE scripts are blocked there. Scripts from
+   external (https:) origins are blocked by the sandbox CSP on both
+   browsers (the data:-URI core ran them; blocking is a deliberate
+   hardening, not a platform constraint).
 ** Firefox OPFS notes: the async OPFS API (`navigator.storage.getDirectory()`)
    works in Firefox ≥ 111 window/worker contexts, which covers the MV2
    event page used here; if it is missing or fails, the Cache API
