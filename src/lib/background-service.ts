@@ -3,6 +3,12 @@ import { PackageStore, type PreparedFile } from './store';
 import { DnrRuleManager, type RuleSpec } from './dnr';
 import { baseUrlForResource } from './html-rewrite';
 import { parseDataUri, encodeBase64 } from './base64';
+import {
+  hasLayers,
+  mergedPathFor,
+  resolveLayeredPath,
+  storedFileView,
+} from './layers';
 import type { HtmlRewriter, TabsPort } from './ports';
 import type { RoutesFile, StorageFile } from './model';
 import type { OpenCapResponse, PackageViewInfo, RouteView } from './messages';
@@ -21,20 +27,47 @@ export interface CapsiumServiceDeps {
 }
 
 /**
+ * Resolve a merged-view resource path (e.g. `content/index.html`) to the
+ * stored file that serves it. Without layers the file is looked up
+ * directly; with layers (§5a) the merged view resolves top → bottom and a
+ * tombstoned/absent path yields null (no rule — the URL 404s).
+ */
+function servedFile(
+  files: Map<string, { contentType: string; base64: string }>,
+  storage: StorageFile | null,
+  tombstones: Record<string, string[]>,
+  resourcePath: string,
+): { contentType: string; base64: string } | null {
+  if (!hasLayers(storage)) return files.get(resourcePath) ?? null;
+  const resolution = resolveLayeredPath(
+    storedFileView(files.keys(), tombstones),
+    storage,
+    resourcePath,
+    'self',
+  );
+  if (resolution.kind !== 'found') return null;
+  return files.get(resolution.path) ?? null;
+}
+
+/**
  * Build DNR redirect specs from the (normalized) routes of a package.
  * Handler routes are accepted but not served (execution is deferred;
- * reactors respond 501).
+ * reactors respond 501). With layered storage, routes whose resource
+ * resolves tombstoned/not-found are skipped (serving them would be a 404).
  */
 export function buildRuleSpecs(
   routes: RoutesFile,
   files: Map<string, { contentType: string; base64: string }>,
   storage: StorageFile | null,
+  tombstones: Record<string, string[]> = {},
 ): RuleSpec[] {
+  const layered = hasLayers(storage);
   const specs: RuleSpec[] = [];
   for (const route of routes.routes) {
     if ('resource' in route) {
-      const file = files.get(route.resource);
+      const file = servedFile(files, storage, tombstones, route.resource);
       if (!file) {
+        if (layered) continue; // tombstoned or absent → 404
         throw new Error(
           `Route ${route.path} references missing resource ${route.resource}`,
         );
@@ -51,8 +84,9 @@ export function buildRuleSpecs(
           `Route ${route.path} references unknown dataset "${route.dataset}"`,
         );
       }
-      const file = files.get(source);
+      const file = servedFile(files, storage, tombstones, source);
       if (!file) {
+        if (layered) continue; // tombstoned or absent → 404
         throw new Error(
           `Dataset "${route.dataset}" source file ${source} not found`,
         );
@@ -126,6 +160,7 @@ export class CapsiumService {
         files: prepared.map((file) => file.path),
         validity: pkg.validity,
         checksums: pkg.checksums,
+        tombstones: pkg.tombstones,
       },
       prepared,
     );
@@ -135,6 +170,7 @@ export class CapsiumService {
         pkg.routes,
         new Map(prepared.map((file) => [file.path, file])),
         pkg.storage,
+        pkg.tombstones,
       );
       await this.rules.installPackageRules(capId, specs);
     } catch (error) {
@@ -157,9 +193,12 @@ export class CapsiumService {
       let bytes = file.bytes;
       if (file.isText && file.contentType === 'text/html') {
         const html = new TextDecoder().decode(file.bytes);
+        // With layers the stored path is raw (<layer>/content/x.html) but
+        // the served URL uses the merged view (content/x.html).
+        const merged = mergedPathFor(pkg.storage, file.path) ?? file.path;
         const rewritten = await this.rewriter.rewrite(
           html,
-          baseUrlForResource(capId, file.path),
+          baseUrlForResource(capId, merged),
         );
         bytes = new TextEncoder().encode(rewritten);
       }
@@ -208,7 +247,12 @@ export class CapsiumService {
         const file = await this.store.getFile(capId, path);
         if (file) files.set(path, file);
       }
-      const specs = buildRuleSpecs(info.routes, files, info.storage);
+      const specs = buildRuleSpecs(
+        info.routes,
+        files,
+        info.storage,
+        info.tombstones ?? {},
+      );
       await this.rules.installPackageRules(capId, specs);
     }
   }

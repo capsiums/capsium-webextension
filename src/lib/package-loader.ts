@@ -18,6 +18,15 @@ import { isTextMime, detectMimeType } from './mime';
 import { verifyChecksums } from './checksums';
 import { verifyPackageSignature } from './signatures';
 import { isEncryptedPackage, decryptPackage } from './encryption';
+import {
+  collectTombstones,
+  entriesFileView,
+  hasLayers,
+  mergedContentPaths,
+  mergedPathFor,
+  resolveLayeredPath,
+  TOMBSTONES_FILE,
+} from './layers';
 import { PackageError } from './errors';
 
 export type { PackageErrorCode } from './errors';
@@ -51,6 +60,8 @@ export interface LoadedPackage {
   checksums: 'verified' | 'absent';
   /** 'verified' when a declared digital signature checked out (§6a). */
   signature: 'verified' | 'absent';
+  /** Parsed layer tombstones (§5a), persisted for serving-time resolution. */
+  tombstones: Record<string, string[]>;
   validity: ContentValidity;
 }
 
@@ -113,15 +124,19 @@ export class PackageLoader {
       parseJsonConfig('metadata.json', metadataBytes),
     );
 
-    const manifestBytes = entries.get('manifest.json');
-    const manifest = manifestBytes
-      ? parseManifest(parseJsonConfig('manifest.json', manifestBytes))
-      : generateManifest(contentPathsOf(entries));
-
     const storageBytes = entries.get('storage.json');
     const storage = storageBytes
       ? parseStorage(parseJsonConfig('storage.json', storageBytes))
       : null;
+
+    const manifestBytes = entries.get('manifest.json');
+    const manifest = manifestBytes
+      ? parseManifest(parseJsonConfig('manifest.json', manifestBytes))
+      : generateManifest(
+          hasLayers(storage)
+            ? mergedContentPaths(entries, storage)
+            : contentPathsOf(entries),
+        );
 
     const routesBytes = entries.get('routes.json');
     const routes = routesBytes
@@ -144,6 +159,9 @@ export class PackageLoader {
     }
 
     const files = this.extractFiles(entries, manifest, storage);
+    const tombstones = hasLayers(storage)
+      ? collectTombstones(entries, storage)
+      : {};
 
     return {
       metadata,
@@ -153,6 +171,7 @@ export class PackageLoader {
       files,
       checksums,
       signature,
+      tombstones,
       validity: {
         package: `${metadata.name}@${metadata.version}`,
         valid: true,
@@ -192,6 +211,10 @@ export class PackageLoader {
     manifest: Manifest,
     storage: StorageFile | null,
   ): ExtractedFile[] {
+    if (hasLayers(storage)) {
+      return this.extractLayeredFiles(entries, manifest, storage);
+    }
+
     const paths = new Set<string>(Object.keys(manifest.resources));
     if (storage) {
       for (const dataSet of Object.values(storage.storage.dataSets)) {
@@ -213,6 +236,52 @@ export class PackageLoader {
       return { path, bytes, contentType, isText: isTextMime(contentType) };
     });
   }
+
+  /**
+   * §5a extraction: keep every layer file under its RAW path
+   * (`updates/content/index.html`) so serving can resolve the merged view
+   * top → bottom (and dependent packages see only exported layers).
+   * Referenced resources must resolve `found` or `tombstoned`; a plain
+   * `not-found` is a packaging error.
+   */
+  private extractLayeredFiles(
+    entries: Map<string, Uint8Array>,
+    manifest: Manifest,
+    storage: StorageFile | null,
+  ): ExtractedFile[] {
+    const view = entriesFileView(entries);
+    const referenced = new Set<string>(Object.keys(manifest.resources));
+    if (storage) {
+      for (const dataSet of Object.values(storage.storage.dataSets)) {
+        if (dataSet.source !== undefined) referenced.add(dataSet.source);
+        if (dataSet.databaseFile !== undefined)
+          referenced.add(dataSet.databaseFile);
+      }
+    }
+    for (const path of referenced) {
+      if (resolveLayeredPath(view, storage, path, 'self').kind === 'not-found') {
+        throw new PackageError(
+          'missing-resource',
+          `File "${path}" is referenced by the package but not present in any layer`,
+        );
+      }
+    }
+
+    const files: ExtractedFile[] = [];
+    for (const [path, bytes] of [...entries.entries()].sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      if (CONFIG_FILES.has(path)) continue;
+      if (path === TOMBSTONES_FILE || path.endsWith(`/${TOMBSTONES_FILE}`))
+        continue;
+      const merged = mergedPathFor(storage, path);
+      if (merged === null) continue; // not part of the merged view
+      const contentType =
+        manifest.resources[merged]?.type ?? detectMimeType(path);
+      files.push({ path, bytes, contentType, isText: isTextMime(contentType) });
+    }
+    return files;
+  }
 }
 
 function contentPathsOf(entries: Map<string, Uint8Array>): string[] {
@@ -220,3 +289,15 @@ function contentPathsOf(entries: Map<string, Uint8Array>): string[] {
     (path) => path.startsWith('content/') && !path.endsWith('/'),
   );
 }
+
+/** Package config/envelope files never stored as servable content. */
+const CONFIG_FILES = new Set([
+  'metadata.json',
+  'manifest.json',
+  'routes.json',
+  'storage.json',
+  'security.json',
+  'authentication.json',
+  'signature.json',
+  'signature.sig',
+]);

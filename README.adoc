@@ -35,6 +35,12 @@ reactor.
    (RSA-OAEP SHA-256) and the inner zip decrypted (AES-256-GCM) via
    `crypto.subtle`, after which the package loads like any other. A wrong
    or absent key yields a clear, retryable error.
+** Layered storage (§5a): when `storage.json` declares `layers`
+   (bottom → top), every layer file is stored under its raw path and each
+   request resolves the merged view **top → bottom** — first hit wins.
+   `.capsium-tombstones` deletions resolve 404 (no DNR rule is installed),
+   `private` layers are hidden from dependent packages, and the manifest /
+   routes auto-generate from the merged view.
 --
 . Package files are extracted **binary-safe** (raw bytes; uniform base64 in
    `chrome.storage.local` — PDFs/images are no longer corrupted).
@@ -78,6 +84,10 @@ npm run zip         # distributable zips in .output/
   routes / storage / security, legacy normalization, auto-generation.
   Should later converge on `@capsium/core` (capsium-js) once published.
 * `package-loader.ts` — .cap → validated, normalized in-memory package.
+* `signatures.ts` / `encryption.ts` — §6a signature and §6b decryption
+  gates (WebCrypto).
+* `layers.ts` — §5a overlay resolution (top → bottom, tombstones,
+  exported/private viewpoints).
 * `store.ts` — transactional `chrome.storage.local` persistence (rollback on
   partial failure).
 * `dnr.ts` — per-package namespaced DNR rule lifecycle.
@@ -97,11 +107,12 @@ worker, popup, offscreen document) that wire the DI ports to
 * Serving is via DNR redirects to base64 data: URIs (kept from the original
   design). Very large resources inflate by ~33% and depend on URL-length
   limits. An OPFS / Cache-API-based serving layer (replacing data: URIs) is
-  explicitly deferred.
+  explicitly deferred. Tombstoned/absent package URLs have no rule, so the
+  browser shows its generic unreachable-host page rather than a styled 404.
 * Dynamic handler routes (`{path, method, handler}`) are parsed but not
   executed (reactors respond 501; execution deferred).
-* `layers` in storage.json is parsed, without behavior (layered storage
-  deferred).
+* Writes to the topmost writable layer are not supported (the viewer is
+  read-only; §5a write semantics deferred).
 * Firefox target builds (MV2 event pages) but is best-effort; Chrome is the
   primary target.
 * `unlimitedStorage` is kept because packages are stored base64-encoded in
