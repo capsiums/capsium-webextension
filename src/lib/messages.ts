@@ -14,6 +14,8 @@ export interface OpenCapRequest {
   action: typeof OPEN_CAP_ACTION;
   /** data: URI of the .cap file (message passing is JSON-safe strings only). */
   dataURI: string;
+  /** PKCS#8 PEM private key, required to open an encrypted package (§6b). */
+  privateKey?: string;
 }
 
 export function isOpenCapRequest(message: unknown): message is OpenCapRequest {
@@ -91,7 +93,13 @@ export interface PackageViewInfo {
 
 /** background -> popup. */
 export type OpenCapResponse =
-  { ok: true; info: PackageViewInfo } | { ok: false; error: string };
+  | { ok: true; info: PackageViewInfo }
+  | {
+      ok: false;
+      error: string;
+      /** true when the package is encrypted and a private key is (still) needed. */
+      needsPrivateKey?: boolean;
+    };
 
 export function isOpenCapResponse(
   message: unknown,

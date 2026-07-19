@@ -122,7 +122,7 @@ export default defineBackground(() => {
 
   browser.runtime.onMessage.addListener((message: unknown) => {
     if (!isOpenCapRequest(message)) return undefined;
-    return service.openFromDataUri(message.dataURI);
+    return service.openFromDataUri(message.dataURI, message.privateKey);
   });
 
   // Periodic expiry sweep (packages live at most maxAgeMs).

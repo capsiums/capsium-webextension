@@ -1,4 +1,4 @@
-import { PackageLoader, type LoadedPackage } from './package-loader';
+import { PackageLoader, PackageError, type LoadedPackage } from './package-loader';
 import { PackageStore, type PreparedFile } from './store';
 import { DnrRuleManager, type RuleSpec } from './dnr';
 import { baseUrlForResource } from './html-rewrite';
@@ -91,13 +91,21 @@ export class CapsiumService {
   }
 
   /** Popup entry point: open a .cap file handed over as a data: URI. */
-  async openFromDataUri(dataUri: string): Promise<OpenCapResponse> {
+  async openFromDataUri(
+    dataUri: string,
+    privateKey?: string,
+  ): Promise<OpenCapResponse> {
     try {
       const { bytes } = parseDataUri(dataUri);
-      const pkg = await this.loader.load(bytes);
+      const pkg = await this.loader.load(bytes, { privateKey });
       const capId = await this.installAndOpen(pkg);
       return { ok: true, info: this.toViewInfo(pkg, capId) };
     } catch (error) {
+      if (error instanceof PackageError && error.code === 'encryption') {
+        // Encrypted package without (or with a wrong) key: the popup shows
+        // its private-key field and retries with the pasted PEM.
+        return { ok: false, error: error.message, needsPrivateKey: true };
+      }
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error),

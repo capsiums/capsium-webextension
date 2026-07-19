@@ -36,6 +36,39 @@ export function renderError(container: HTMLElement, message: string): void {
   container.replaceChildren(box);
 }
 
+/**
+ * Private-key prompt for encrypted packages (§6b). The form is wired up by
+ * the popup entrypoint (`#privateKeyForm` / `#privateKeyInput`); `message`
+ * carries the background's explanation (key required, or wrong key).
+ */
+export function renderPrivateKeyPrompt(
+  container: HTMLElement,
+  message: string,
+): void {
+  const doc = container.ownerDocument;
+  const box = el(doc, 'div');
+
+  box.append(el(doc, 'h2', 'Encrypted package'));
+  const note = el(doc, 'p', message);
+  if (/wrong|match|corrupt/i.test(message)) note.className = 'error';
+  box.append(note);
+
+  const form = el(doc, 'form') as HTMLFormElement;
+  form.id = 'privateKeyForm';
+  const textarea = el(doc, 'textarea') as HTMLTextAreaElement;
+  textarea.id = 'privateKeyInput';
+  textarea.rows = 8;
+  textarea.placeholder = '-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----';
+  textarea.spellcheck = false;
+  textarea.setAttribute('aria-label', 'Private key (PEM)');
+  const submit = el(doc, 'button', 'Unlock package') as HTMLButtonElement;
+  submit.type = 'submit';
+  form.append(textarea, submit);
+  box.append(form);
+
+  container.replaceChildren(box);
+}
+
 export function renderPackageInfo(
   container: HTMLElement,
   info: PackageViewInfo,

@@ -1,6 +1,10 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { renderError, renderPackageInfo } from '../src/lib/popup-view';
+import {
+  renderError,
+  renderPackageInfo,
+  renderPrivateKeyPrompt,
+} from '../src/lib/popup-view';
 import type { PackageViewInfo } from '../src/lib/messages';
 
 const XSS =
@@ -65,5 +69,14 @@ describe('popup rendering (XSS fix, bug #5)', () => {
     renderError(container, XSS);
     expect(container.querySelector('img')).toBeNull();
     expect(container.textContent).toContain(XSS);
+  });
+
+  it('renderPrivateKeyPrompt shows the key form with the message, XSS-safe', () => {
+    const container = document.createElement('div');
+    renderPrivateKeyPrompt(container, `Encrypted — key needed ${XSS}`);
+    expect(container.querySelector('form')).not.toBeNull();
+    expect(container.querySelector('textarea')).not.toBeNull();
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.textContent).toContain('Encrypted — key needed');
   });
 });

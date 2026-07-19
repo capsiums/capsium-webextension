@@ -36,6 +36,11 @@ export { parseStorage, storageSchema } from './storage';
 export type { StorageFile, DataSet } from './storage';
 export { parseSecurity, securitySchema } from './security';
 export type { SecurityFile } from './security';
+export {
+  parseEncryptionEnvelope,
+  encryptionEnvelopeSchema,
+} from './encryption';
+export type { EncryptionEnvelope } from './encryption';
 
 /** Error thrown when a package config file fails schema validation. */
 export class ModelError extends Error {
