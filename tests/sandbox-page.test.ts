@@ -113,7 +113,9 @@ describe('BlobUrlRegistry', () => {
 /* SandboxRenderer                                               */
 /* ------------------------------------------------------------ */
 
-function makeRenderer(assets: Record<string, { contentType: string; body: Uint8Array | string }>) {
+function makeRenderer(
+  assets: Record<string, { contentType: string; body: Uint8Array | string }>,
+) {
   const blobUrls = new FakeBlobUrls();
   const renderedDocuments: string[] = [];
   const renderedUrls: string[] = [];
@@ -126,7 +128,12 @@ function makeRenderer(assets: Record<string, { contentType: string; body: Uint8A
           const asset = assets[url];
           return asset === undefined
             ? { url, found: false }
-            : { url, found: true, contentType: asset.contentType, body: asset.body };
+            : {
+                url,
+                found: true,
+                contentType: asset.contentType,
+                body: asset.body,
+              };
         }),
       );
     },
@@ -134,10 +141,18 @@ function makeRenderer(assets: Record<string, { contentType: string; body: Uint8A
     renderDocument: (html) => renderedDocuments.push(html),
     renderBlobUrl: (url) => renderedUrls.push(url),
   };
-  return { renderer: new SandboxRenderer(ports), blobUrls, renderedDocuments, renderedUrls, requests };
+  return {
+    renderer: new SandboxRenderer(ports),
+    blobUrls,
+    renderedDocuments,
+    renderedUrls,
+    requests,
+  };
 }
 
-function serveMessage(overrides: Partial<SandboxServeMessage>): SandboxServeMessage {
+function serveMessage(
+  overrides: Partial<SandboxServeMessage>,
+): SandboxServeMessage {
   return {
     type: 'capsium.sandbox.serve',
     capId: CAP,

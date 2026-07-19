@@ -18,7 +18,13 @@ import {
   ENCRYPTED_CAP,
   ENCRYPTED_PRIVATE_KEY_FILE,
 } from './fixtures/global-setup';
-import { FakeDnr, FakeFileStore, FakeRewriter, FakeStorage, FakeTabs } from './helpers/fakes';
+import {
+  FakeDnr,
+  FakeFileStore,
+  FakeRewriter,
+  FakeStorage,
+  FakeTabs,
+} from './helpers/fakes';
 
 const ROUTER = 'chrome-extension://ext-id/router.html';
 const dec = new TextDecoder();

@@ -171,11 +171,7 @@ export default defineBackground(() => {
     }
     if (isAuthenticateRequest(message)) {
       return servicePromise.then((service) =>
-        service.authenticate(
-          message.capId,
-          message.username,
-          message.password,
-        ),
+        service.authenticate(message.capId, message.username, message.password),
       );
     }
     if (isResolveRequest(message)) {

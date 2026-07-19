@@ -26,11 +26,19 @@ describe('parseServeHash / serveHashFor', () => {
       capId: CAP,
       path: '/assets/app.js',
     });
-    expect(parseServeHash(`#/serve/${CAP}/`)).toEqual({ capId: CAP, path: '/' });
+    expect(parseServeHash(`#/serve/${CAP}/`)).toEqual({
+      capId: CAP,
+      path: '/',
+    });
     expect(parseServeHash(`#/serve/${CAP}`)).toEqual({ capId: CAP, path: '/' });
     expect(parseServeHash(`#/serve/${CAP}/a%20b.png`)).toEqual({
       capId: CAP,
       path: '/a b.png',
+    });
+    // A query on the original URL lands inside the fragment — stripped.
+    expect(parseServeHash(`#/serve/${CAP}/p?q=1`)).toEqual({
+      capId: CAP,
+      path: '/p',
     });
   });
 
@@ -43,7 +51,10 @@ describe('parseServeHash / serveHashFor', () => {
   it('round-trips with serveHashFor', () => {
     const hash = serveHashFor(CAP, '/assets/a b.png');
     expect(hash).toBe(`#/serve/${CAP}/assets/a%20b.png`);
-    expect(parseServeHash(hash)).toEqual({ capId: CAP, path: '/assets/a b.png' });
+    expect(parseServeHash(hash)).toEqual({
+      capId: CAP,
+      path: '/assets/a b.png',
+    });
   });
 });
 
@@ -53,7 +64,10 @@ describe('parseCapUrl', () => {
       capId: CAP,
       path: '/documents/report/',
     });
-    expect(parseCapUrl(`https://${CAP}.cap`)).toEqual({ capId: CAP, path: '/' });
+    expect(parseCapUrl(`https://${CAP}.cap`)).toEqual({
+      capId: CAP,
+      path: '/',
+    });
   });
 
   it('rejects foreign URLs', () => {
@@ -124,7 +138,9 @@ function harness(resolutions: ResolveResult[]): Harness {
   return state;
 }
 
-const foundResult = (overrides: Partial<ResolveResult> = {}): ResolveResult => ({
+const foundResult = (
+  overrides: Partial<ResolveResult> = {},
+): ResolveResult => ({
   path: '/',
   kind: 'found',
   store: 'opfs',

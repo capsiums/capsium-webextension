@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { zipSync } from 'fflate';
 import { md5 } from '../src/lib/auth/md5';
-import { apr1, verifyHtpasswd, htpasswdHashType } from '../src/lib/auth/htpasswd';
+import {
+  apr1,
+  verifyHtpasswd,
+  htpasswdHashType,
+} from '../src/lib/auth/htpasswd';
 import { parseAuthentication } from '../src/lib/model';
 import { PackageLoader } from '../src/lib/package-loader';
 import { CapsiumService } from '../src/lib/background-service';
@@ -30,7 +34,9 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 const md5Hex = (text: string): string =>
-  [...md5(enc.encode(text))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  [...md5(enc.encode(text))]
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 
 describe('authentication model (§4b)', () => {
   it('parses basicAuth and oauth2 configs', () => {
@@ -216,7 +222,11 @@ describe('CapsiumService — basic auth flow', () => {
     expect(dnr.rules.size).toBe(1);
 
     // Wrong credentials → error, still locked.
-    const wrong = await service.authenticate(capId, AUTH_USER, 'wrong-password');
+    const wrong = await service.authenticate(
+      capId,
+      AUTH_USER,
+      'wrong-password',
+    );
     expect(wrong.ok).toBe(false);
     if (wrong.ok) return;
     expect(wrong.error).toMatch(/invalid username or password/i);
