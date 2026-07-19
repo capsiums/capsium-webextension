@@ -228,7 +228,12 @@ export class PackageLoader {
     authentication: AuthenticationFile | null,
   ): ExtractedFile[] {
     if (hasLayers(storage)) {
-      return this.extractLayeredFiles(entries, manifest, storage, authentication);
+      return this.extractLayeredFiles(
+        entries,
+        manifest,
+        storage,
+        authentication,
+      );
     }
 
     const paths = new Set<string>(Object.keys(manifest.resources));
@@ -256,11 +261,11 @@ export class PackageLoader {
   }
 
   /**
-   * §5a extraction: keep every layer file under its RAW path
-   * (`updates/content/index.html`) so serving can resolve the merged view
-   * top → bottom (and dependent packages see only exported layers).
-   * Referenced resources must resolve `found` or `tombstoned`; a plain
-   * `not-found` is a packaging error.
+   * §5a extraction: keep every non-config file under its RAW path (content/
+   * tree, `<layer>/x`, plus root-level files such as dataset sources) so
+   * serving can resolve the merged view top → bottom (and dependent
+   * packages see only exported layers). Referenced resources must resolve
+   * `found` or `tombstoned`; a plain `not-found` is a packaging error.
    */
   private extractLayeredFiles(
     entries: Map<string, Uint8Array>,
@@ -278,7 +283,9 @@ export class PackageLoader {
       }
     }
     for (const path of referenced) {
-      if (resolveLayeredPath(view, storage, path, 'self').kind === 'not-found') {
+      if (
+        resolveLayeredPath(view, storage, path, 'self').kind === 'not-found'
+      ) {
         throw new PackageError(
           'missing-resource',
           `File "${path}" is referenced by the package but not present in any layer`,
@@ -295,13 +302,14 @@ export class PackageLoader {
       if (path === TOMBSTONES_FILE || path.endsWith(`/${TOMBSTONES_FILE}`))
         continue;
       const merged = mergedPathFor(storage, path);
-      // The htpasswd file is config-adjacent: kept even outside layer dirs.
-      if (merged === null && path !== passwdFile) continue;
       const contentType =
         manifest.resources[merged ?? path]?.type ?? detectMimeType(path);
       files.push({ path, bytes, contentType, isText: isTextMime(contentType) });
     }
-    if (passwdFile !== null && !files.some((file) => file.path === passwdFile)) {
+    if (
+      passwdFile !== null &&
+      !files.some((file) => file.path === passwdFile)
+    ) {
       throw new PackageError(
         'missing-resource',
         `basicAuth passwdFile "${passwdFile}" is not present in the archive`,

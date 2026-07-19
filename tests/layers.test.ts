@@ -40,10 +40,10 @@ const LAYERED_STORAGE: StorageFile = parseStorage({
 
 function demoEntries(): Map<string, Uint8Array> {
   return new Map([
-    ['base/content/index.html', enc.encode('base')],
-    ['base/content/gone.html', enc.encode('gone')],
-    ['updates/content/index.html', enc.encode('updated')],
-    ['updates/.capsium-tombstones', enc.encode('["content/gone.html"]')],
+    ['base/index.html', enc.encode('base')],
+    ['base/gone.html', enc.encode('gone')],
+    ['updates/index.html', enc.encode('updated')],
+    ['updates/.capsium-tombstones', enc.encode('["gone.html"]')],
   ]);
 }
 
@@ -62,7 +62,7 @@ describe('resolveLayeredPath', () => {
     const res = resolveLayeredPath(view, LAYERED_STORAGE, 'content/index.html');
     expect(res).toMatchObject({
       kind: 'found',
-      path: 'updates/content/index.html',
+      path: 'updates/index.html',
     });
   });
 
@@ -88,7 +88,7 @@ describe('resolveLayeredPath', () => {
     // updates is private → only base is visible
     expect(res).toMatchObject({
       kind: 'found',
-      path: 'base/content/index.html',
+      path: 'base/index.html',
     });
     // tombstones of the hidden layer do not apply either
     expect(
@@ -114,7 +114,7 @@ describe('resolveLayeredPath', () => {
   it('tolerates malformed tombstone files', () => {
     const files = new Map([
       ['updates/.capsium-tombstones', enc.encode('not json')],
-      ['updates/content/a.html', enc.encode('a')],
+      ['updates/a.html', enc.encode('a')],
     ]);
     const res = resolveLayeredPath(
       entriesFileView(files),
@@ -129,7 +129,7 @@ describe('collectTombstones + storedFileView', () => {
   it('parses per-layer tombstones for persistence and reuses them', () => {
     const entries = demoEntries();
     const tombstones = collectTombstones(entries, LAYERED_STORAGE);
-    expect(tombstones).toEqual({ updates: ['content/gone.html'] });
+    expect(tombstones).toEqual({ updates: ['gone.html'] });
 
     const view = storedFileView(entries.keys(), tombstones);
     expect(
@@ -162,12 +162,12 @@ describe('PackageLoader — layered fixture', () => {
 
     // Raw layer files are stored (serving resolves the winner later).
     const paths = pkg.files.map((file) => file.path);
-    expect(paths).toContain('base/content/index.html');
-    expect(paths).toContain('updates/content/index.html');
-    expect(paths).toContain('base/data/animals.json');
+    expect(paths).toContain('base/index.html');
+    expect(paths).toContain('updates/index.html');
+    expect(paths).toContain('data/animals.json');
     expect(paths.some((path) => path.includes(TOMBSTONES_FILE))).toBe(false);
 
-    expect(pkg.tombstones).toEqual({ updates: ['content/gone.html'] });
+    expect(pkg.tombstones).toEqual({ updates: ['gone.html'] });
 
     // Routes generated off the merged manifest: no /gone routes.
     const routePaths = pkg.routes.routes.map((route) => route.path);
@@ -180,7 +180,7 @@ describe('PackageLoader — layered fixture', () => {
 });
 
 describe('resolveUrlPath — layered serving', () => {
-  const tombstones = { updates: ['content/gone.html'] };
+  const tombstones = { updates: ['gone.html'] };
   const view = {
     capId: 'cap-id',
     storage: parseStorage({
@@ -194,14 +194,14 @@ describe('resolveUrlPath — layered serving', () => {
     }),
     tombstones,
     fileTypes: {
-      'base/content/index.html': 'text/html',
-      'updates/content/index.html': 'text/html',
-      'base/content/gone.html': 'text/html',
-      'base/data/animals.json': 'application/json',
+      'base/index.html': 'text/html',
+      'updates/index.html': 'text/html',
+      'base/gone.html': 'text/html',
+      'data/animals.json': 'application/json',
     },
   };
 
-  it('serves the top-layer winner and resolves dataset sources through layers', () => {
+  it('serves the top-layer winner and resolves dataset sources at the root', () => {
     const resolution = resolveUrlPath(
       {
         ...view,
@@ -219,7 +219,7 @@ describe('resolveUrlPath — layered serving', () => {
       kind: 'found',
       file: {
         capId: 'cap-id',
-        path: 'updates/content/index.html',
+        path: 'updates/index.html',
         contentType: 'text/html',
       },
     });
@@ -238,7 +238,7 @@ describe('resolveUrlPath — layered serving', () => {
       kind: 'found',
       file: {
         capId: 'cap-id',
-        path: 'base/data/animals.json',
+        path: 'data/animals.json',
         contentType: 'application/json',
       },
     });
@@ -293,7 +293,7 @@ describe('CapsiumService — layered package end to end', () => {
     const index = resolved[0];
     expect(index?.kind).toBe('found');
     if (index?.kind === 'found') {
-      expect(index.filePath).toBe('updates/content/index.html');
+      expect(index.filePath).toBe('updates/index.html');
       expect(
         dec.decode((await fileStore.get(index.fileCapId, index.filePath))!),
       ).toContain(LAYERED_UPDATED_INDEX);
@@ -309,7 +309,7 @@ describe('CapsiumService — layered package end to end', () => {
     const rebuiltIndex = rebuilt[0];
     expect(rebuiltIndex?.kind).toBe('found');
     if (rebuiltIndex?.kind === 'found') {
-      expect(rebuiltIndex.filePath).toBe('updates/content/index.html');
+      expect(rebuiltIndex.filePath).toBe('updates/index.html');
       expect(
         dec.decode(
           (await fileStore.get(rebuiltIndex.fileCapId, rebuiltIndex.filePath))!,

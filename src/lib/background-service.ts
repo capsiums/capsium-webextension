@@ -131,7 +131,12 @@ export class CapsiumService {
       // Packaging errors surface at install, exactly where the data:-URI
       // core threw while building rule specs.
       const info = await this.mustGetInfo(capId);
-      validateRoutes(this.servingView(capId, info));
+      validateRoutes(this.servingView(capId, info), {
+        // Composite packages may resolve resources through a dependency
+        // installed later in the session (§4a merged-view fallthrough).
+        allowDependencyFallthrough:
+          Object.keys(info.metadata.dependencies).length > 0,
+      });
       await this.rebuildRules(capId);
     } catch (error) {
       // Roll back storage so a half-installed package never leaks.

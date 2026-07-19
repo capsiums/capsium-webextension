@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "harness:build": "esbuild harness/serve.ts --bundle --platform=node --target=node24 --format=esm --outfile=harness/serve.mjs --banner:js=\"import { createRequire as __harnessCreateRequire } from 'node:module'; const require = __harnessCreateRequire(import.meta.url);\""
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -33,6 +34,7 @@
     "@types/chrome": "^0.2.2",
     "@types/node": "^26.1.1",
     "@types/webextension-polyfill": "^0.12.5",
+    "esbuild": "^0.27.7",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
     "happy-dom": "^20.11.0",
@@ -40,6 +42,7 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.64.0",
     "vitest": "^4.1.10",
-    "wxt": "^0.20.27"
+    "wxt": "^0.20.27",
+    "yaml": "^2.9.0"
   }
 }

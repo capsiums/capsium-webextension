@@ -10,6 +10,7 @@ export default tseslint.config(
       '.wxt',
       'coverage',
       'tests/fixtures/generated',
+      'harness/serve.mjs',
       '*.min.js',
     ],
   },

@@ -1,0 +1,63 @@
+name: conformance
+
+on:
+  push:
+    branches: [main, feature/*]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays 06:00 UTC
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  # The conformance classes this reactor claims (see README badges).
+  # Not claimed: `authentication` (the extension's §4b gate is a same-origin
+  # browser credential flow — no reactor-side roles/deploy config) and
+  # `handler-routes` (the kit's when_unclaimed 501 case runs instead).
+  CONFORMANCE_CLASSES: core-reactor,signatures,encryption,layered-storage,composite
+
+jobs:
+  conformance:
+    name: Capsium conformance kit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout capsium-webextension
+        uses: actions/checkout@v4
+
+      - name: Checkout the conformance kit
+        uses: actions/checkout@v4
+        with:
+          repository: capsiums/capsium-conformance
+          path: capsium-conformance
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+          working-directory: capsium-conformance
+
+      - name: Build the conformance harness
+        run: |
+          npm ci
+          npm run harness:build
+
+      # The node-bridge adapter spawns harness/serve.mjs per fixture: the
+      # fixture is activated through the extension's own core modules (the
+      # real CapsiumService with in-memory DI ports) and served over
+      # node:http. Negative fixtures exit before the port opens -> StartError.
+      - name: Run the conformance kit
+        working-directory: capsium-conformance
+        env:
+          CONFORMANCE_ADAPTER: ${{ github.workspace }}/harness/conformance_reactor_adapter.rb
+        run: bundle exec rspec

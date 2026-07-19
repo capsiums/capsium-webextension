@@ -49,6 +49,17 @@ describe('parseRoutes', () => {
     ]);
   });
 
+  it('normalizes the legacy gem form {path, target:{dataset}}', () => {
+    const routes = parseRoutes({
+      routes: [
+        { path: '/api/v1/data/animals', target: { dataset: 'animals' } },
+      ],
+    });
+    expect(routes.routes).toEqual([
+      { path: '/api/v1/data/animals', dataset: 'animals' },
+    ]);
+  });
+
   it('accepts the object-keyed-by-path form', () => {
     const routes = parseRoutes({
       routes: {

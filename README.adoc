@@ -1,6 +1,12 @@
 = Capsium Viewer (web extension)
 :toc: preamble
 
+image:https://img.shields.io/badge/Capsium_Core_Reactor-conformant-0F6B83[Capsium Core Reactor,link=https://github.com/capsiums/capsium-webextension/actions/workflows/conformance.yml]
+image:https://img.shields.io/badge/Capsium_signatures-conformant-0F6B83[Capsium signatures,link=https://github.com/capsiums/capsium-webextension/actions/workflows/conformance.yml]
+image:https://img.shields.io/badge/Capsium_encryption-conformant-0F6B83[Capsium encryption,link=https://github.com/capsiums/capsium-webextension/actions/workflows/conformance.yml]
+image:https://img.shields.io/badge/Capsium_layered--storage-conformant-0F6B83[Capsium layered-storage,link=https://github.com/capsiums/capsium-webextension/actions/workflows/conformance.yml]
+image:https://img.shields.io/badge/Capsium_composite-conformant-0F6B83[Capsium composite,link=https://github.com/capsiums/capsium-webextension/actions/workflows/conformance.yml]
+
 A browser extension (Chrome MV3; Firefox target available) that loads a
 `.cap` Capsium package and renders it in the browser — a user-side Capsium
 reactor.
@@ -201,6 +207,47 @@ npm run zip         # distributable zips in .output/
 `src/entrypoints/` holds the thin WXT entrypoints (background service
 worker, popup, offscreen document, router page, sandbox page) that wire
 the DI ports to `webextension-polyfill` / `chrome.*`.
+
+== Conformance
+
+This reactor is verified against the
+https://github.com/capsiums/capsium-conformance[Capsium conformance kit]
+in CI (link:.github/workflows/conformance.yml[conformance workflow]).
+Claimed conformance classes (kept green by that workflow — see the badges
+above):
+
+* `core-reactor`
+* `signatures`
+* `encryption`
+* `layered-storage`
+* `composite`
+
+The kit asserts package behavior over plain HTTP, so a user-side reactor
+plugs in through a *node bridge* (`harness/`): the adapter
+(`harness/conformance_reactor_adapter.rb`) spawns `harness/serve.mjs`,
+which activates the fixture through the extension's own core modules — the
+real `CapsiumService` (package loader with the SHA-256 integrity, §6a
+signature and §6b decryption gates, resolver with §5a layers and §4a
+composites) running with in-memory DI ports — and serves the resolved
+content over `node:http` with the kit's reactor semantics (dataset
+materialization as `application/json`, handler-route 501s, 404/405
+statuses, the §7 introspection API). A package the reactor rejects exits
+before the port opens, which the adapter reports as `StartError`.
+Not claimed: `authentication` (the §4b gate is a same-origin browser
+credential flow — no reactor-side roles or deploy config) and
+`handler-routes` (handler routes are answered 501, the kit's
+`when_unclaimed` case).
+
+Run it locally (both checkouts side by side):
+
+[source,sh]
+----
+npm ci && npm run harness:build   # bundle harness/serve.ts -> harness/serve.mjs
+cd ../capsium-conformance && bundle install
+CONFORMANCE_ADAPTER=$PWD/../capsium-webextension/harness/conformance_reactor_adapter.rb \
+CONFORMANCE_CLASSES=core-reactor,signatures,encryption,layered-storage,composite \
+  bundle exec rspec
+----
 
 == Known limitations / future work
 

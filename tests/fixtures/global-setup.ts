@@ -18,9 +18,9 @@
  *    (cleartext) + signature.json (envelope) + package.enc (AES-256-GCM
  *    ciphertext of the inner canonical zip; DEK wrapped RSA-OAEP-SHA256).
  *  - layered-demo-1.0.0.cap: §5a overlay storage — base (exported) +
- *    updates (private, writable) layers; updates overrides index.html and
- *    tombstones content/gone.html; manifest/routes auto-generated from the
- *    merged view.
+ *    updates (private, writable) layers mirroring the content/ tree;
+ *    updates overrides index.html and tombstones gone.html; manifest/routes
+ *    auto-generated from the merged view.
  *  - composite-parent-1.0.0.cap / composite-core-1.0.0.cap: §4a composite
  *    pair — the parent declares `capsium://example.com/core` and references
  *    its resources (exported app.js, private secret.js, responseRewrite
@@ -271,8 +271,10 @@ export default function setup(): void {
     encKeyPair.privateKeyPem,
   );
 
-  // Layered (§5a): base (exported) + updates (private, writable) overlay;
-  // updates overrides index.html and tombstones content/gone.html.
+  // Layered (§5a): base (exported) + updates (private, writable) overlay,
+  // each layer directory mirroring the content/ tree; updates overrides
+  // index.html and tombstones gone.html. The dataset source sits at the
+  // package root, outside the layer directories.
   const enc2 = new TextEncoder();
   const layeredFiles: Record<string, Uint8Array> = {
     'metadata.json': enc2.encode(
@@ -296,22 +298,18 @@ export default function setup(): void {
         },
       }),
     ),
-    'base/content/index.html': enc2.encode(
+    'base/index.html': enc2.encode(
       `<!doctype html><html><body>${LAYERED_BASE_INDEX}</body></html>`,
     ),
-    'base/content/gone.html': enc2.encode(
+    'base/gone.html': enc2.encode(
       '<!doctype html><html><body>deleted in updates</body></html>',
     ),
-    'base/content/styles.css': enc2.encode('body { color: #12404f; }'),
-    'base/data/animals.json': enc2.encode(
-      JSON.stringify([{ name: 'capybara' }]),
-    ),
-    'updates/content/index.html': enc2.encode(
+    'base/styles.css': enc2.encode('body { color: #12404f; }'),
+    'data/animals.json': enc2.encode(JSON.stringify([{ name: 'capybara' }])),
+    'updates/index.html': enc2.encode(
       `<!doctype html><html><body>${LAYERED_UPDATED_INDEX}</body></html>`,
     ),
-    'updates/.capsium-tombstones': enc2.encode(
-      JSON.stringify(['content/gone.html']),
-    ),
+    'updates/.capsium-tombstones': enc2.encode(JSON.stringify(['gone.html'])),
   };
   writeFileSync(
     fileURLToPath(new URL(`./generated/${LAYERED_CAP}`, import.meta.url)),

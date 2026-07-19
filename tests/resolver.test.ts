@@ -126,6 +126,30 @@ describe('resolveUrlPath — inheritance attributes (§4a)', () => {
       },
     });
   });
+
+  it('carries route-level headers with the resolution', () => {
+    const pkg = view({
+      routes: parseRoutes({
+        routes: [
+          {
+            path: '/styles.css',
+            resource: 'content/styles.css',
+            headers: { 'Cache-Control': 'public, max-age=31536000' },
+          },
+        ],
+      }),
+      fileTypes: { 'content/styles.css': 'text/css' },
+    });
+    expect(resolveUrlPath(pkg, [], '/styles.css')).toEqual({
+      kind: 'found',
+      file: {
+        capId: CAP,
+        path: 'content/styles.css',
+        contentType: 'text/css',
+        responseHeaders: { 'Cache-Control': 'public, max-age=31536000' },
+      },
+    });
+  });
 });
 
 describe('resolveUrlPath — layered storage (§5a)', () => {
@@ -142,11 +166,11 @@ describe('resolveUrlPath — layered storage (§5a)', () => {
         layers: [{ path: 'base' }, { path: 'updates' }],
       },
     }),
-    tombstones: { updates: ['content/gone.html'] },
+    tombstones: { updates: ['gone.html'] },
     fileTypes: {
-      'base/content/index.html': 'text/html',
-      'updates/content/index.html': 'text/html',
-      'base/content/gone.html': 'text/html',
+      'base/index.html': 'text/html',
+      'updates/index.html': 'text/html',
+      'base/gone.html': 'text/html',
     },
   });
 
@@ -155,7 +179,7 @@ describe('resolveUrlPath — layered storage (§5a)', () => {
       kind: 'found',
       file: {
         capId: CAP,
-        path: 'updates/content/index.html',
+        path: 'updates/index.html',
         contentType: 'text/html',
       },
     });
@@ -254,6 +278,121 @@ describe('resolveUrlPath — composite (§4a)', () => {
         contentType: 'text/javascript',
       },
     });
+  });
+
+  it('resolves full-guid references of any URI scheme', () => {
+    const httpsGuid = 'https://conformance.capsiums.dev/composite-core';
+    const httpsDep = depView({
+      guid: httpsGuid,
+      manifest: {
+        resources: {
+          'content/app.js': { type: 'text/javascript', visibility: 'exported' },
+        },
+      },
+      fileTypes: { 'content/app.js': 'text/javascript' },
+      filePaths: ['content/app.js'],
+    });
+    const parent = view({
+      routes: parseRoutes({
+        routes: [
+          { path: '/vendor/app.js', resource: `${httpsGuid}/content/app.js` },
+        ],
+      }),
+    });
+    expect(resolveUrlPath(parent, [httpsDep], '/vendor/app.js')).toEqual({
+      kind: 'found',
+      file: {
+        capId: DEP_CAP,
+        path: 'content/app.js',
+        contentType: 'text/javascript',
+      },
+    });
+  });
+});
+
+describe('resolveUrlPath — composite fallthrough (§4a merged view)', () => {
+  const sharedDep = depView({
+    manifest: {
+      resources: {
+        'content/shared.txt': { type: 'text/plain', visibility: 'exported' },
+        'content/secret.txt': { type: 'text/plain', visibility: 'private' },
+      },
+    },
+    fileTypes: {
+      'content/shared.txt': 'text/plain',
+      'content/secret.txt': 'text/plain',
+    },
+    filePaths: ['content/shared.txt', 'content/secret.txt'],
+  });
+
+  it('falls through to dependency exported content when own layers miss', () => {
+    const parent = view({
+      routes: parseRoutes({
+        routes: [
+          { path: '/fallthrough/shared.txt', resource: 'content/shared.txt' },
+          { path: '/fallthrough/secret.txt', resource: 'content/secret.txt' },
+        ],
+      }),
+    });
+    expect(
+      resolveUrlPath(parent, [sharedDep], '/fallthrough/shared.txt'),
+    ).toEqual({
+      kind: 'found',
+      file: {
+        capId: DEP_CAP,
+        path: 'content/shared.txt',
+        contentType: 'text/plain',
+      },
+    });
+    // The dependency's private resource is not visible through fallthrough.
+    expect(
+      resolveUrlPath(parent, [sharedDep], '/fallthrough/secret.txt').kind,
+    ).toBe('not-found');
+  });
+
+  it('own content shadows dependency content on fallthrough', () => {
+    const parent = view({
+      routes: parseRoutes({
+        routes: [{ path: '/shared.txt', resource: 'content/shared.txt' }],
+      }),
+      fileTypes: { 'content/shared.txt': 'text/plain' },
+    });
+    expect(resolveUrlPath(parent, [sharedDep], '/shared.txt')).toEqual({
+      kind: 'found',
+      file: {
+        capId: CAP,
+        path: 'content/shared.txt',
+        contentType: 'text/plain',
+      },
+    });
+  });
+
+  it('a tombstone suppresses the fallthrough too', () => {
+    const parent = view({
+      routes: parseRoutes({
+        routes: [{ path: '/gone.txt', resource: 'content/gone.txt' }],
+      }),
+      storage: parseStorage({
+        storage: {
+          dataSets: {},
+          layers: [{ path: 'base' }, { path: 'updates' }],
+        },
+      }),
+      tombstones: { updates: ['gone.txt'] },
+      fileTypes: { 'base/gone.txt': 'text/plain' },
+    });
+    const goneDep = depView({
+      manifest: {
+        resources: {
+          'content/gone.txt': { type: 'text/plain', visibility: 'exported' },
+        },
+      },
+      fileTypes: { 'content/gone.txt': 'text/plain' },
+      filePaths: ['content/gone.txt'],
+    });
+    expect(resolveUrlPath(parent, [goneDep], '/gone.txt').kind).toBe(
+      'not-found',
+    );
   });
 });
 

@@ -10,18 +10,20 @@
  * effect without touching DNR rules.
  *
  * Route matching honors: exact paths and `remap` (§4a), dataset routes,
- * `capsium://` dependency references (longest guid prefix), layered storage
- * with tombstones (§5a, top -> bottom), private routes/resources/layers
- * hidden from dependents, and route inheritance attributes
- * (`responseRewrite.body` becomes a body override, `responseHeaders` /
- * `responseRewrite.headers` travel with the resolution). A package's own
- * routes win over inherited dependency routes.
+ * dependency resource references (`<dependency-guid>/<path>`, longest guid
+ * prefix), layered storage with tombstones (§5a, top -> bottom), private
+ * routes/resources/layers hidden from dependents, and route inheritance
+ * attributes (`responseRewrite.body` becomes a body override,
+ * `responseHeaders` / `responseRewrite.headers` / route `headers` travel
+ * with the resolution). A package's own routes win over inherited
+ * dependency routes; an own route whose resource misses in the merged view
+ * falls through to the dependencies' exported content (own content shadows
+ * dependency content; a tombstone suppresses the fallthrough).
  *
  * The module is pure: it never sees file bytes (those live in the file
  * store; the router reads them after resolving).
  */
 import {
-  isDependencyResourceRef,
   parseDependencyResourceRef,
   resolveDependencyResource,
   type DependencyServingView,
@@ -66,19 +68,38 @@ const NOT_FOUND: Resolution = { kind: 'not-found' };
 export const UNAUTHORIZED_BODY = 'authentication required';
 
 /** Stored-file lookup for a (possibly layered) package, self viewpoint. */
-function servedFile(
+function resolveOwnResource(
   view: PackageServingView,
   resourcePath: string,
-): ResolvedFile | null {
-  if (!hasLayers(view.storage)) return fileOrNull(view, resourcePath);
+):
+  | { readonly kind: 'found'; readonly file: ResolvedFile }
+  | { readonly kind: 'tombstoned' }
+  | { readonly kind: 'not-found' } {
+  if (!hasLayers(view.storage)) {
+    const file = fileOrNull(view, resourcePath);
+    return file === null ? { kind: 'not-found' } : { kind: 'found', file };
+  }
   const resolution = resolveLayeredPath(
     storedFileView(Object.keys(view.fileTypes), view.tombstones),
     view.storage,
     resourcePath,
     'self',
   );
-  if (resolution.kind !== 'found') return null;
-  return fileOrNull(view, resolution.path);
+  if (resolution.kind !== 'found') {
+    return resolution.kind === 'tombstoned'
+      ? { kind: 'tombstoned' }
+      : { kind: 'not-found' };
+  }
+  const file = fileOrNull(view, resolution.path);
+  return file === null ? { kind: 'not-found' } : { kind: 'found', file };
+}
+
+function servedFile(
+  view: PackageServingView,
+  resourcePath: string,
+): ResolvedFile | null {
+  const resolution = resolveOwnResource(view, resourcePath);
+  return resolution.kind === 'found' ? resolution.file : null;
 }
 
 function fileOrNull(
@@ -100,8 +121,10 @@ function applyInheritance(
   file: ResolvedFile,
 ): ResolvedFile {
   const bodyOverride = route.responseRewrite?.body;
-  // responseHeaders apply only when absent; responseRewrite.headers override.
+  // Route `headers` are the base; responseHeaders apply only when absent;
+  // responseRewrite.headers override.
   const responseHeaders = {
+    ...route.headers,
     ...route.responseHeaders,
     ...route.responseRewrite?.headers,
   };
@@ -128,18 +151,36 @@ function resolveOwnRoute(
 ): Resolution {
   if ('resource' in route) {
     let file: ResolvedFile | null;
-    if (isDependencyResourceRef(route.resource)) {
+    if (route.resource.includes('://')) {
+      // Dependency reference (<dependency-guid>/<path>): resolves against
+      // the installed dependencies; an unprefixed URI is a plain 404.
       const ref = parseDependencyResourceRef(
         route.resource,
         dependencies.map((dep) => dep.guid),
       );
-      const dep = dependencies.find((entry) => entry.guid === ref?.guid);
+      const dep =
+        ref === null
+          ? undefined
+          : dependencies.find((entry) => entry.guid === ref.guid);
       if (ref === null || dep === undefined) return NOT_FOUND;
       const resolution = resolveDependencyResource(dep, ref.path);
       if (resolution.kind !== 'found') return NOT_FOUND;
       file = fileOrNull(dep, resolution.path);
     } else {
-      file = servedFile(view, route.resource);
+      const own = resolveOwnResource(view, route.resource);
+      // A tombstoned resource suppresses the dependency layers too.
+      if (own.kind === 'tombstoned') return NOT_FOUND;
+      file = own.kind === 'found' ? own.file : null;
+      if (file === null) {
+        // §4a merged view: own layers miss -> fall through to the
+        // dependencies' exported content in install order.
+        for (const dep of dependencies) {
+          const resolution = resolveDependencyResource(dep, route.resource);
+          if (resolution.kind !== 'found') continue;
+          file = fileOrNull(dep, resolution.path);
+          if (file !== null) break;
+        }
+      }
     }
     return file === null ? NOT_FOUND : found(applyInheritance(route, file));
   }
@@ -156,14 +197,14 @@ function resolveOwnRoute(
 /**
  * Resolve one inherited dependency route (dependent viewpoint): only
  * `exported` routes and resources (§4a), private layers excluded (§5a).
- * Transitive `capsium://` references are not supported in the viewer.
+ * Transitive dependency references are not supported in the viewer.
  */
 function resolveDependencyRoute(
   route: Route,
   dep: InstalledDependencyView,
 ): Resolution {
   if ('resource' in route) {
-    if (isDependencyResourceRef(route.resource)) return NOT_FOUND;
+    if (route.resource.includes('://')) return NOT_FOUND;
     const resolution = resolveDependencyResource(dep, route.resource);
     if (resolution.kind !== 'found') return NOT_FOUND;
     const file = fileOrNull(dep, resolution.path);
@@ -222,16 +263,21 @@ export function resolveUrlPath(
  * Install-time route validation (packaging errors, caught before anything is
  * served — the data:-URI core threw the same errors while building rules):
  * own routes must reference existing resources/datasets, except with layered
- * storage where an unresolved resource simply 404s at serve time.
- * `capsium://` references are validated at serve time (dependencies may be
- * installed later in the session).
+ * storage or declared dependencies (§4a) where an unresolved resource may
+ * still resolve through the merged view and simply 404s at serve time.
+ * Dependency references (`<guid>/<path>` URIs) are validated at serve time
+ * (dependencies may be installed later in the session).
  */
-export function validateRoutes(view: PackageServingView): void {
-  const layered = hasLayers(view.storage);
+export function validateRoutes(
+  view: PackageServingView,
+  options: { allowDependencyFallthrough?: boolean } = {},
+): void {
+  const unresolvedOk =
+    hasLayers(view.storage) || options.allowDependencyFallthrough === true;
   for (const route of view.routes.routes) {
     if ('resource' in route) {
-      if (isDependencyResourceRef(route.resource)) continue;
-      if (servedFile(view, route.resource) === null && !layered) {
+      if (route.resource.includes('://')) continue;
+      if (servedFile(view, route.resource) === null && !unresolvedOk) {
         throw new Error(
           `Route ${route.path} references missing resource ${route.resource}`,
         );
@@ -243,7 +289,7 @@ export function validateRoutes(view: PackageServingView): void {
           `Route ${route.path} references unknown dataset "${route.dataset}"`,
         );
       }
-      if (servedFile(view, source) === null && !layered) {
+      if (servedFile(view, source) === null && !unresolvedOk) {
         throw new Error(
           `Dataset "${route.dataset}" source file ${source} not found`,
         );

@@ -40,6 +40,18 @@ describe('verifyChecksums', () => {
       { path: 'ghost.txt', reason: 'unknown-file' },
     ]);
   });
+
+  it('excludes dotfiles, like the reference packager (§5a tombstones)', async () => {
+    const files = new Map([
+      ['content/index.html', enc.encode('<html/>')],
+      ['updates/.capsium-tombstones', enc.encode('["index.html"]')],
+      ['.hidden/key', enc.encode('x')],
+    ]);
+    const checksums = {
+      'content/index.html': await sha256Hex(enc.encode('<html/>')),
+    };
+    await expect(verifyChecksums(files, checksums)).resolves.toEqual([]);
+  });
 });
 
 describe('parseSecurity', () => {

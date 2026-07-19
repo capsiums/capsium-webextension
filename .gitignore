@@ -5,3 +5,4 @@ coverage/
 tests/fixtures/generated/
 .DS_Store
 *.log
+harness/serve.mjs
