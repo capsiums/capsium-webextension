@@ -8,14 +8,25 @@
  *    security.json with SHA-256 checksums for every file.
  *  - canonical-demo-1.0.0-tampered.cap: same package but content/index.html
  *    was modified after checksums were computed (must be rejected).
+ *  - signed-demo-1.0.0.cap: like canonical-demo but additionally signed per
+ *    §6a (signature.pub.pem + signature.sig, RSA-SHA256 over the sorted
+ *    checksum-key byte concatenation — same construction as capsium-js's
+ *    NodeSignatureProvider, so fixtures are exchangeable).
+ *  - signed-demo-1.0.0-badsig.cap: valid checksums but the signature was
+ *    made with a DIFFERENT private key (must be rejected, code "signature").
+ * The signing private key is written next to the fixtures
+ * (signed-demo-1.0.0.private.pem) for cross-implementation checks.
  */
 import { zipSync } from 'fflate';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 export const CANONICAL_CAP = 'canonical-demo-1.0.0.cap';
 export const TAMPERED_CAP = 'canonical-demo-1.0.0-tampered.cap';
+export const SIGNED_CAP = 'signed-demo-1.0.0.cap';
+export const BADSIG_CAP = 'signed-demo-1.0.0-badsig.cap';
+export const SIGNED_PRIVATE_KEY_FILE = 'signed-demo-1.0.0.private.pem';
 
 /** 1x1 PNG; tests assert byte-identical round-trip of these exact bytes. */
 export const PIXEL_PNG_BASE64 =
@@ -31,14 +42,10 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-export default function setup(): void {
-  const outDir = fileURLToPath(new URL('./generated', import.meta.url));
-  mkdirSync(outDir, { recursive: true });
-
+function baseFiles(): Record<string, Uint8Array> {
   const enc = new TextEncoder();
   const nestedZip = zipSync({ 'hello.txt': enc.encode(NESTED_ZIP_TEXT) });
-
-  const files: Record<string, Uint8Array> = {
+  return {
     'metadata.json': enc.encode(
       JSON.stringify({
         name: 'canonical-demo',
@@ -71,17 +78,55 @@ export default function setup(): void {
     'content/assets/blob.zip': nestedZip,
     'data/animals.json': enc.encode(JSON.stringify([{ name: 'capybara' }])),
   };
+}
 
+function checksumsOf(
+  files: Record<string, Uint8Array>,
+): Record<string, string> {
   const checksums: Record<string, string> = {};
   for (const [path, bytes] of Object.entries(files))
     checksums[path] = sha256Hex(bytes);
-  const securityJson = new TextEncoder().encode(
+  return checksums;
+}
+
+function securityJsonBytes(
+  checksums: Record<string, string>,
+  digitalSignatures?: { publicKey: string; signatureFile: string },
+): Uint8Array {
+  return new TextEncoder().encode(
     JSON.stringify({
       security: {
         integrityChecks: { checksumAlgorithm: 'SHA-256', checksums },
+        ...(digitalSignatures === undefined ? {} : { digitalSignatures }),
       },
     }),
   );
+}
+
+/** §6a signed payload: bytes of every checksummed file, keys sorted. */
+function signedPayload(
+  files: Record<string, Uint8Array>,
+  checksums: Record<string, string>,
+): Buffer {
+  const paths = Object.keys(checksums).sort();
+  return Buffer.concat(paths.map((path) => Buffer.from(files[path]!)));
+}
+
+function rsaKeyPair(): { publicKeyPem: string; privateKeyPem: string } {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+  return { publicKeyPem: publicKey, privateKeyPem: privateKey };
+}
+
+export default function setup(): void {
+  const outDir = fileURLToPath(new URL('./generated', import.meta.url));
+  mkdirSync(outDir, { recursive: true });
+
+  const files = baseFiles();
+  const securityJson = securityJsonBytes(checksumsOf(files));
 
   writeFileSync(
     fileURLToPath(new URL(`./generated/${CANONICAL_CAP}`, import.meta.url)),
@@ -97,6 +142,48 @@ export default function setup(): void {
         '<!doctype html><html><body>TAMPERED</body></html>',
       ),
       'security.json': securityJson,
+    }),
+  );
+
+  // Signed (§6a): the public key is added BEFORE the checksums are computed
+  // so it is checksum-covered; security.json and signature.sig never are.
+  const keyPair = rsaKeyPair();
+  const signedFiles: Record<string, Uint8Array> = {
+    ...baseFiles(),
+    'signature.pub.pem': new TextEncoder().encode(keyPair.publicKeyPem),
+  };
+  const signedChecksums = checksumsOf(signedFiles);
+  const signedSecurity = securityJsonBytes(signedChecksums, {
+    publicKey: 'signature.pub.pem',
+    signatureFile: 'signature.sig',
+  });
+  const payload = signedPayload(signedFiles, signedChecksums);
+  const signature = sign('sha256', payload, keyPair.privateKeyPem);
+
+  writeFileSync(
+    fileURLToPath(new URL(`./generated/${SIGNED_CAP}`, import.meta.url)),
+    zipSync({
+      ...signedFiles,
+      'security.json': signedSecurity,
+      'signature.sig': signature,
+    }),
+  );
+  writeFileSync(
+    fileURLToPath(
+      new URL(`./generated/${SIGNED_PRIVATE_KEY_FILE}`, import.meta.url),
+    ),
+    keyPair.privateKeyPem,
+  );
+
+  // Bad signature: signed with an unrelated key — checksums still valid.
+  const otherKey = rsaKeyPair();
+  const badSignature = sign('sha256', payload, otherKey.privateKeyPem);
+  writeFileSync(
+    fileURLToPath(new URL(`./generated/${BADSIG_CAP}`, import.meta.url)),
+    zipSync({
+      ...signedFiles,
+      'security.json': signedSecurity,
+      'signature.sig': badSignature,
     }),
   );
 }

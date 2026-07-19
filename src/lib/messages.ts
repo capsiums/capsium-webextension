@@ -85,6 +85,8 @@ export interface PackageViewInfo {
   routes: RouteView[];
   validity: ContentValidity;
   checksums: 'verified' | 'absent';
+  /** 'verified' when a declared digital signature checked out (§6a). */
+  signature: 'verified' | 'absent';
 }
 
 /** background -> popup. */

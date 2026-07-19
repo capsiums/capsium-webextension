@@ -21,6 +21,7 @@ function makeInfo(overrides: Partial<PackageViewInfo> = {}): PackageViewInfo {
       lastChecked: '2026-07-18T00:00:00.000Z',
     },
     checksums: 'verified',
+    signature: 'verified',
     ...overrides,
   };
 }
@@ -47,6 +48,16 @@ describe('popup rendering (XSS fix, bug #5)', () => {
     const absent = document.createElement('div');
     renderPackageInfo(absent, makeInfo({ checksums: 'absent' }));
     expect(absent.textContent).toContain('no security.json');
+  });
+
+  it('shows the signature verification status (§6a)', () => {
+    const signed = document.createElement('div');
+    renderPackageInfo(signed, makeInfo({ signature: 'verified' }));
+    expect(signed.textContent).toContain('RSA-SHA256 verified');
+
+    const unsigned = document.createElement('div');
+    renderPackageInfo(unsigned, makeInfo({ signature: 'absent' }));
+    expect(unsigned.textContent).toContain('not signed');
   });
 
   it('renderError escapes too', () => {
