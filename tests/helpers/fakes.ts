@@ -8,6 +8,7 @@ import type {
   StoragePort,
   TabsPort,
 } from '../../src/lib/ports';
+import type { BlobUrlPort } from '../../src/lib/ports';
 import type {
   CacheLike,
   OpfsDirectoryLike,
@@ -251,7 +252,27 @@ export class FakeCache implements CacheLike {
     return Promise.resolve(this.entries.delete(request));
   }
 
-  keys(): Promise<Array<{ url: string }>> {
+  keys(): Promise<ReadonlyArray<{ url: string }>> {
     return Promise.resolve([...this.entries.keys()].map((url) => ({ url })));
+  }
+}
+
+/** Deterministic blob: URLs with create/revoke lifecycle tracking. */
+export class FakeBlobUrls implements BlobUrlPort {
+  /** Live URLs -> the Blob they were minted from. */
+  readonly live = new Map<string, Blob>();
+  /** Revocation order. */
+  readonly revoked: string[] = [];
+  private seq = 0;
+
+  create(blob: Blob): string {
+    const url = `blob:capsium-fake/${++this.seq}`;
+    this.live.set(url, blob);
+    return url;
+  }
+
+  revoke(url: string): void {
+    this.live.delete(url);
+    this.revoked.push(url);
   }
 }

@@ -13,6 +13,7 @@ import {
   isAddDependencyRequest,
   isAuthenticateRequest,
   isOpenCapRequest,
+  isOpenTabRequest,
   isResolveRequest,
   RESOLVE_RESPONSE_TYPE,
 } from '../lib/messages';
@@ -182,6 +183,9 @@ export default defineBackground(() => {
         type: RESOLVE_RESPONSE_TYPE,
         results: await service.resolve(message.capId, message.paths),
       }));
+    }
+    if (isOpenTabRequest(message)) {
+      return browser.tabs.create({ url: message.url });
     }
     return undefined;
   });
