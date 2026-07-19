@@ -26,10 +26,13 @@
  *    its resources (exported app.js, private secret.js, responseRewrite
  *    route); the core package gates secret.js (manifest-private) and
  *    internal.js (route-private).
+ *  - auth-demo-1.0.0.cap: §4b basicAuth — authentication.json +
+ *    auth/.htpasswd (alice via apr1-MD5, bob via bcrypt).
  * The signing/encryption private keys are written next to the fixtures
  * (*.private.pem) for cross-implementation checks.
  */
 import { zipSync } from 'fflate';
+import bcrypt from 'bcryptjs';
 import {
   constants,
   createCipheriv,
@@ -60,6 +63,14 @@ export const COMPOSITE_CORE_CAP = 'composite-core-1.0.0.cap';
 export const CORE_GUID = 'capsium://example.com/core';
 export const CORE_APP_JS = 'export const core = 42;';
 export const REWRITTEN_BODY = '// wrapped by parent';
+
+export const AUTH_CAP = 'auth-demo-1.0.0.cap';
+/** apr1-MD5 user in AUTH_CAP's htpasswd (hash matches capsium-js fixtures). */
+export const AUTH_USER = 'alice';
+export const AUTH_PASSWORD = 'swordfish';
+/** bcrypt user in AUTH_CAP's htpasswd. */
+export const AUTH_BCRYPT_USER = 'bob';
+export const AUTH_BCRYPT_PASSWORD = 'hunter2';
 
 /** 1x1 PNG; tests assert byte-identical round-trip of these exact bytes. */
 export const PIXEL_PNG_BASE64 =
@@ -416,6 +427,46 @@ export default function setup(): void {
     zipSync({
       ...coreFiles,
       'security.json': securityJsonBytes(checksumsOf(coreFiles)),
+    }),
+  );
+
+  // Basic auth (§4b): authentication.json enables basicAuth; the htpasswd
+  // holds alice (apr1-MD5, same hash as the capsium-js fixtures) and bob
+  // (bcrypt, generated here).
+  const enc4 = new TextEncoder();
+  const htpasswd =
+    `${AUTH_USER}:$apr1$eWvS2f3d$uvjLCQ9y6Om4aVryf5uSX.\n` +
+    `${AUTH_BCRYPT_USER}:${bcrypt.hashSync(AUTH_BCRYPT_PASSWORD, 10)}\n`;
+  const authFiles: Record<string, Uint8Array> = {
+    'metadata.json': enc4.encode(
+      JSON.stringify({
+        name: 'auth-demo',
+        version: '1.0.0',
+        description: 'Basic-auth demo package',
+        guid: 'https://github.com/capsiums/auth-demo',
+      }),
+    ),
+    'authentication.json': enc4.encode(
+      JSON.stringify({
+        authentication: {
+          basicAuth: {
+            enabled: true,
+            passwdFile: 'auth/.htpasswd',
+            realm: 'capsium',
+          },
+        },
+      }),
+    ),
+    'auth/.htpasswd': enc4.encode(htpasswd),
+    'content/index.html': enc4.encode(
+      '<!doctype html><html><body>SECRET auth content</body></html>',
+    ),
+  };
+  writeFileSync(
+    fileURLToPath(new URL(`./generated/${AUTH_CAP}`, import.meta.url)),
+    zipSync({
+      ...authFiles,
+      'security.json': securityJsonBytes(checksumsOf(authFiles)),
     }),
   );
 }

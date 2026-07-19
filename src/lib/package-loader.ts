@@ -8,11 +8,13 @@ import {
   generateRoutes,
   parseStorage,
   parseSecurity,
+  parseAuthentication,
   type Metadata,
   type Manifest,
   type RoutesFile,
   type StorageFile,
   type SecurityFile,
+  type AuthenticationFile,
 } from './model';
 import { isTextMime, detectMimeType } from './mime';
 import { verifyChecksums } from './checksums';
@@ -62,6 +64,8 @@ export interface LoadedPackage {
   signature: 'verified' | 'absent';
   /** Parsed layer tombstones (§5a), persisted for serving-time resolution. */
   tombstones: Record<string, string[]>;
+  /** authentication.json when present (§4b); OAuth2 is config-only. */
+  authentication: AuthenticationFile | null;
   validity: ContentValidity;
 }
 
@@ -158,7 +162,8 @@ export class PackageLoader {
       }
     }
 
-    const files = this.extractFiles(entries, manifest, storage);
+    const authentication = this.parseAuthenticationConfig(entries);
+    const files = this.extractFiles(entries, manifest, storage, authentication);
     const tombstones = hasLayers(storage)
       ? collectTombstones(entries, storage)
       : {};
@@ -172,6 +177,7 @@ export class PackageLoader {
       checksums,
       signature,
       tombstones,
+      authentication,
       validity: {
         package: `${metadata.name}@${metadata.version}`,
         valid: true,
@@ -206,13 +212,23 @@ export class PackageLoader {
     }
   }
 
+  /** Parse authentication.json when present (§4b; OAuth2 config-only). */
+  private parseAuthenticationConfig(
+    entries: Map<string, Uint8Array>,
+  ): AuthenticationFile | null {
+    const bytes = entries.get('authentication.json');
+    if (bytes === undefined) return null;
+    return parseAuthentication(parseJsonConfig('authentication.json', bytes));
+  }
+
   private extractFiles(
     entries: Map<string, Uint8Array>,
     manifest: Manifest,
     storage: StorageFile | null,
+    authentication: AuthenticationFile | null,
   ): ExtractedFile[] {
     if (hasLayers(storage)) {
-      return this.extractLayeredFiles(entries, manifest, storage);
+      return this.extractLayeredFiles(entries, manifest, storage, authentication);
     }
 
     const paths = new Set<string>(Object.keys(manifest.resources));
@@ -222,6 +238,8 @@ export class PackageLoader {
         if (dataSet.databaseFile !== undefined) paths.add(dataSet.databaseFile);
       }
     }
+    const passwdFile = requiredPasswdFile(authentication);
+    if (passwdFile !== null) paths.add(passwdFile);
 
     return [...paths].sort().map((path) => {
       const bytes = entries.get(path);
@@ -248,6 +266,7 @@ export class PackageLoader {
     entries: Map<string, Uint8Array>,
     manifest: Manifest,
     storage: StorageFile | null,
+    authentication: AuthenticationFile | null,
   ): ExtractedFile[] {
     const view = entriesFileView(entries);
     const referenced = new Set<string>(Object.keys(manifest.resources));
@@ -267,6 +286,7 @@ export class PackageLoader {
       }
     }
 
+    const passwdFile = requiredPasswdFile(authentication);
     const files: ExtractedFile[] = [];
     for (const [path, bytes] of [...entries.entries()].sort(([a], [b]) =>
       a.localeCompare(b),
@@ -275,10 +295,17 @@ export class PackageLoader {
       if (path === TOMBSTONES_FILE || path.endsWith(`/${TOMBSTONES_FILE}`))
         continue;
       const merged = mergedPathFor(storage, path);
-      if (merged === null) continue; // not part of the merged view
+      // The htpasswd file is config-adjacent: kept even outside layer dirs.
+      if (merged === null && path !== passwdFile) continue;
       const contentType =
-        manifest.resources[merged]?.type ?? detectMimeType(path);
+        manifest.resources[merged ?? path]?.type ?? detectMimeType(path);
       files.push({ path, bytes, contentType, isText: isTextMime(contentType) });
+    }
+    if (passwdFile !== null && !files.some((file) => file.path === passwdFile)) {
+      throw new PackageError(
+        'missing-resource',
+        `basicAuth passwdFile "${passwdFile}" is not present in the archive`,
+      );
     }
     return files;
   }
@@ -288,6 +315,14 @@ function contentPathsOf(entries: Map<string, Uint8Array>): string[] {
   return [...entries.keys()].filter(
     (path) => path.startsWith('content/') && !path.endsWith('/'),
   );
+}
+
+/** The htpasswd file an enabled basicAuth config requires (§4b), if any. */
+function requiredPasswdFile(
+  authentication: AuthenticationFile | null,
+): string | null {
+  const basic = authentication?.authentication.basicAuth;
+  return basic?.enabled === true ? basic.passwdFile : null;
 }
 
 /** Package config/envelope files never stored as servable content. */

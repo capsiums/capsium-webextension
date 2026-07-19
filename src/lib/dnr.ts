@@ -40,6 +40,10 @@ export interface RuleSpec {
   requestHeaders?: Record<string, string>;
   /** Response headers attached via a companion modifyHeaders rule (§4a). */
   responseHeaders?: Record<string, string>;
+  /** Match every URL under `path` (default: exact anchored match). */
+  prefixMatch?: boolean;
+  /** Emit only the modifyHeaders companion, no redirect (§4b auth header). */
+  headersOnly?: boolean;
 }
 
 /** 32-bit FNV-1a — stable across sessions, good enough for block placement. */
@@ -77,16 +81,20 @@ export function buildRules(
   let nextId = ruleBlockStart(capId, salt);
   for (const spec of specs) {
     const condition = {
-      regexFilter: `^https://${escapeRegex(capId)}\\.cap${escapeRegex(spec.path)}(\\?.*)?$`,
+      regexFilter: spec.prefixMatch === true
+        ? `^https://${escapeRegex(capId)}\\.cap${escapeRegex(spec.path)}`
+        : `^https://${escapeRegex(capId)}\\.cap${escapeRegex(spec.path)}(\\?.*)?$`,
       resourceTypes: [...RULE_RESOURCE_TYPES],
     };
-    rules.push({
-      id: nextId,
-      priority: spec.priority ?? 1,
-      action: { type: 'redirect', redirect: { url: spec.dataUri } },
-      condition,
-    });
-    nextId += 1;
+    if (spec.headersOnly !== true) {
+      rules.push({
+        id: nextId,
+        priority: spec.priority ?? 1,
+        action: { type: 'redirect', redirect: { url: spec.dataUri } },
+        condition,
+      });
+      nextId += 1;
+    }
     if (spec.requestHeaders !== undefined || spec.responseHeaders !== undefined) {
       rules.push({
         id: nextId,

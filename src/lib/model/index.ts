@@ -41,6 +41,18 @@ export {
   encryptionEnvelopeSchema,
 } from './encryption';
 export type { EncryptionEnvelope } from './encryption';
+export {
+  parseAuthentication,
+  authenticationSchema,
+  basicAuthSchema,
+  oauth2Schema,
+  DEFAULT_BASIC_REALM,
+} from './authentication';
+export type {
+  AuthenticationFile,
+  BasicAuthConfig,
+  OAuth2Config,
+} from './authentication';
 
 /** Error thrown when a package config file fails schema validation. */
 export class ModelError extends Error {

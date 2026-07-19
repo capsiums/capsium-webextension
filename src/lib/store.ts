@@ -1,5 +1,11 @@
 import type { StoragePort } from './ports';
-import type { Manifest, Metadata, RoutesFile, StorageFile } from './model';
+import type {
+  AuthenticationFile,
+  Manifest,
+  Metadata,
+  RoutesFile,
+  StorageFile,
+} from './model';
 import type { ContentValidity } from './package-loader';
 
 export const INDEX_KEY = 'capsium.index';
@@ -34,6 +40,8 @@ export interface StoredPackageInfo {
   dependencies?: Record<string, string>;
   /** Set when this package is installed as a dependency of another. */
   dependencyOf?: { parent: string; guid: string };
+  /** authentication.json when present (§4b); OAuth2 is config-only. */
+  authentication?: AuthenticationFile | null;
 }
 
 export interface PreparedFile {
