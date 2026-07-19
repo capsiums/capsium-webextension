@@ -17,6 +17,7 @@ import {
 import { isTextMime, detectMimeType } from './mime';
 import { verifyChecksums } from './checksums';
 import { verifyPackageSignature } from './signatures';
+import { isEncryptedPackage, decryptPackage } from './encryption';
 import { PackageError } from './errors';
 
 export type { PackageErrorCode } from './errors';
@@ -66,7 +67,15 @@ export interface LoadedPackage {
 export class PackageLoader {
   constructor(private readonly now: () => Date = () => new Date()) {}
 
-  async load(zipBytes: Uint8Array): Promise<LoadedPackage> {
+  /**
+   * @param options.privateKey PKCS#8 PEM used to unwrap+decrypt an
+   *   encrypted package (§6b); required iff the archive has the encrypted
+   *   layout.
+   */
+  async load(
+    zipBytes: Uint8Array,
+    options: { privateKey?: string } = {},
+  ): Promise<LoadedPackage> {
     let entries: Map<string, Uint8Array>;
     try {
       entries = unzipPackage(zipBytes);
@@ -75,6 +84,26 @@ export class PackageLoader {
         'unzip',
         error instanceof Error ? error.message : String(error),
       );
+    }
+
+    // §6b: encrypted layout — unwrap the DEK and decrypt the inner zip,
+    // then proceed exactly like a normal package.
+    if (isEncryptedPackage(entries)) {
+      if (options.privateKey === undefined) {
+        throw new PackageError(
+          'encryption',
+          'This package is encrypted (§6b): paste the recipient private key (PEM) to open it',
+        );
+      }
+      const innerZip = await decryptPackage(entries, options.privateKey);
+      try {
+        entries = unzipPackage(innerZip);
+      } catch {
+        throw new PackageError(
+          'encryption',
+          'Decrypted payload is not a valid .cap (ZIP) archive',
+        );
+      }
     }
 
     const metadataBytes = entries.get('metadata.json');

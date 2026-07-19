@@ -29,6 +29,12 @@ reactor.
    the package is **rejected** with a clear error on mismatch; the popup
    surfaces it. (X.509 certificates are not importable by WebCrypto; ship an
    SPKI `PUBLIC KEY` PEM.)
+** Encrypted packages (§6b: `metadata.json` + `signature.json` envelope +
+   `package.enc`) are detected on open. The popup then shows a private-key
+   field; with the recipient's PKCS#8 PEM the DEK is unwrapped
+   (RSA-OAEP SHA-256) and the inner zip decrypted (AES-256-GCM) via
+   `crypto.subtle`, after which the package loads like any other. A wrong
+   or absent key yields a clear, retryable error.
 --
 . Package files are extracted **binary-safe** (raw bytes; uniform base64 in
    `chrome.storage.local` — PDFs/images are no longer corrupted).
