@@ -26,6 +26,7 @@ function makeInfo(overrides: Partial<PackageViewInfo> = {}): PackageViewInfo {
     },
     checksums: 'verified',
     signature: 'verified',
+    dependencies: [],
     ...overrides,
   };
 }

@@ -6,6 +6,7 @@ import type { ContentValidity } from './package-loader';
  */
 
 export const OPEN_CAP_ACTION = 'openCapFile';
+export const ADD_DEPENDENCY_ACTION = 'addDependencyCap';
 export const REWRITE_REQUEST_TYPE = 'capsium.rewriteHtml';
 export const REWRITE_RESPONSE_TYPE = 'capsium.rewriteHtml.result';
 
@@ -23,6 +24,27 @@ export function isOpenCapRequest(message: unknown): message is OpenCapRequest {
   const record = message as Record<string, unknown>;
   return (
     record['action'] === OPEN_CAP_ACTION &&
+    typeof record['dataURI'] === 'string'
+  );
+}
+
+/** popup -> background: add a dependency .cap to an open package (§4a). */
+export interface AddDependencyRequest {
+  action: typeof ADD_DEPENDENCY_ACTION;
+  /** capId of the composite package the dependency belongs to. */
+  parentCapId: string;
+  dataURI: string;
+  privateKey?: string;
+}
+
+export function isAddDependencyRequest(
+  message: unknown,
+): message is AddDependencyRequest {
+  if (typeof message !== 'object' || message === null) return false;
+  const record = message as Record<string, unknown>;
+  return (
+    record['action'] === ADD_DEPENDENCY_ACTION &&
+    typeof record['parentCapId'] === 'string' &&
     typeof record['dataURI'] === 'string'
   );
 }
@@ -76,6 +98,16 @@ export interface RouteView {
   target: string;
 }
 
+/** One declared dependency with its in-session install status (§4a). */
+export interface DependencyViewInfo {
+  guid: string;
+  /** Declared semver range (informational in the viewer). */
+  range: string;
+  status: 'installed' | 'missing';
+  name?: string;
+  version?: string;
+}
+
 /** Package summary + mini content-validity view (ARCHITECTURE.md §7) for the popup. */
 export interface PackageViewInfo {
   capId: string;
@@ -89,6 +121,8 @@ export interface PackageViewInfo {
   checksums: 'verified' | 'absent';
   /** 'verified' when a declared digital signature checked out (§6a). */
   signature: 'verified' | 'absent';
+  /** Declared dependencies with their in-session install status (§4a). */
+  dependencies: DependencyViewInfo[];
 }
 
 /** background -> popup. */

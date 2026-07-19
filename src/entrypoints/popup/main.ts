@@ -1,5 +1,10 @@
 import browser from 'webextension-polyfill';
-import { OPEN_CAP_ACTION, isOpenCapResponse } from '../../lib/messages';
+import {
+  OPEN_CAP_ACTION,
+  ADD_DEPENDENCY_ACTION,
+  isOpenCapResponse,
+  type PackageViewInfo,
+} from '../../lib/messages';
 import {
   renderBusy,
   renderError,
@@ -19,14 +24,22 @@ if (
 
 /** data: URI of the package being opened (kept for the key-prompt retry). */
 let pendingDataUri: string | null = null;
+/** capId of the currently displayed package (for dependency adds, §4a). */
+let currentCapId: string | null = null;
+/** Last rendered view info (re-rendered with a notice on dep-add errors). */
+let lastInfo: PackageViewInfo | null = null;
+
+function container(): HTMLElement {
+  return packageInfo as HTMLElement;
+}
 
 function openPackage(dataURI: string, privateKey?: string): void {
   browser.runtime
     .sendMessage({ action: OPEN_CAP_ACTION, dataURI, privateKey })
-    .then((response: unknown) => handleResponse(response))
+    .then((response: unknown) => handleOpenResponse(response))
     .catch((error: unknown) => {
       renderError(
-        packageInfo as HTMLElement,
+        container(),
         error instanceof Error
           ? error.message
           : 'Failed to contact the background worker',
@@ -34,24 +47,29 @@ function openPackage(dataURI: string, privateKey?: string): void {
     });
 }
 
-function handleResponse(response: unknown): void {
-  const container = packageInfo as HTMLElement;
+function showInfo(info: PackageViewInfo): void {
+  currentCapId = info.capId;
+  lastInfo = info;
+  renderPackageInfo(container(), info);
+}
+
+function handleOpenResponse(response: unknown): void {
   if (!isOpenCapResponse(response)) {
-    renderError(container, 'No response from the background worker');
+    renderError(container(), 'No response from the background worker');
     return;
   }
   if (response.ok) {
     pendingDataUri = null;
-    renderPackageInfo(container, response.info);
+    showInfo(response.info);
     return;
   }
   if (response.needsPrivateKey === true) {
     // Encrypted package: show the private-key field and resubmit with it.
-    renderPrivateKeyPrompt(container, response.error);
+    renderPrivateKeyPrompt(container(), response.error);
     wirePrivateKeyForm();
     return;
   }
-  renderError(container, response.error);
+  renderError(container(), response.error);
 }
 
 function wirePrivateKeyForm(): void {
@@ -66,7 +84,7 @@ function wirePrivateKeyForm(): void {
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     if (pendingDataUri === null) return;
-    renderBusy(packageInfo as HTMLElement);
+    renderBusy(container());
     openPackage(pendingDataUri, keyInput.value);
   });
 }
@@ -76,18 +94,72 @@ input.addEventListener('change', () => {
   if (!file) return;
 
   if (!/\.(cap|zip)$/i.test(file.name)) {
-    renderError(packageInfo as HTMLElement, 'Please select a .cap file');
+    renderError(container(), 'Please select a .cap file');
     return;
   }
 
-  renderBusy(packageInfo as HTMLElement);
+  renderBusy(container());
   const reader = new FileReader();
   reader.onload = () => {
     // Message passing is JSON-based; a base64 data: URI is the safe carrier.
     pendingDataUri = String(reader.result);
     openPackage(pendingDataUri);
   };
-  reader.onerror = () =>
-    renderError(packageInfo as HTMLElement, 'Failed to read the file');
+  reader.onerror = () => renderError(container(), 'Failed to read the file');
+  reader.readAsDataURL(file);
+});
+
+// Dependency file input is rendered dynamically (§4a) — delegate the event.
+packageInfo.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.id !== 'depFileInput') {
+    return;
+  }
+  const file = target.files?.[0];
+  if (!file || currentCapId === null) return;
+  if (!/\.(cap|zip)$/i.test(file.name)) {
+    if (lastInfo !== null) {
+      renderPackageInfo(container(), lastInfo, 'Please select a .cap file');
+    }
+    return;
+  }
+
+  const parentCapId = currentCapId;
+  renderBusy(container());
+  const reader = new FileReader();
+  reader.onload = () => {
+    browser.runtime
+      .sendMessage({
+        action: ADD_DEPENDENCY_ACTION,
+        parentCapId,
+        dataURI: String(reader.result),
+      })
+      .then((response: unknown) => {
+        if (!isOpenCapResponse(response)) {
+          renderError(container(), 'No response from the background worker');
+          return;
+        }
+        if (response.ok) {
+          showInfo(response.info);
+        } else if (lastInfo !== null) {
+          renderPackageInfo(container(), lastInfo, response.error);
+        } else {
+          renderError(container(), response.error);
+        }
+      })
+      .catch((error: unknown) => {
+        renderError(
+          container(),
+          error instanceof Error
+            ? error.message
+            : 'Failed to contact the background worker',
+        );
+      });
+  };
+  reader.onerror = () => {
+    if (lastInfo !== null) {
+      renderPackageInfo(container(), lastInfo, 'Failed to read the file');
+    }
+  };
   reader.readAsDataURL(file);
 });

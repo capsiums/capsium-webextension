@@ -1,17 +1,27 @@
 import { PackageLoader, PackageError, type LoadedPackage } from './package-loader';
-import { PackageStore, type PreparedFile } from './store';
+import {
+  PackageStore,
+  type PreparedFile,
+  type StoredPackageInfo,
+} from './store';
 import { DnrRuleManager, type RuleSpec } from './dnr';
 import { baseUrlForResource } from './html-rewrite';
 import { parseDataUri, encodeBase64 } from './base64';
+import { mergedPathFor } from './layers';
 import {
-  hasLayers,
-  mergedPathFor,
-  resolveLayeredPath,
-  storedFileView,
-} from './layers';
+  buildCompositeRuleSpecs,
+  buildOwnRuleSpecs,
+  type InstalledDependencyView,
+  type ServingFiles,
+} from './serving';
 import type { HtmlRewriter, TabsPort } from './ports';
 import type { RoutesFile, StorageFile } from './model';
-import type { OpenCapResponse, PackageViewInfo, RouteView } from './messages';
+import type {
+  DependencyViewInfo,
+  OpenCapResponse,
+  PackageViewInfo,
+  RouteView,
+} from './messages';
 
 export const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes, as before
 export const SWEEP_ALARM_NAME = 'capsium.sweep';
@@ -27,30 +37,8 @@ export interface CapsiumServiceDeps {
 }
 
 /**
- * Resolve a merged-view resource path (e.g. `content/index.html`) to the
- * stored file that serves it. Without layers the file is looked up
- * directly; with layers (§5a) the merged view resolves top → bottom and a
- * tombstoned/absent path yields null (no rule — the URL 404s).
- */
-function servedFile(
-  files: Map<string, { contentType: string; base64: string }>,
-  storage: StorageFile | null,
-  tombstones: Record<string, string[]>,
-  resourcePath: string,
-): { contentType: string; base64: string } | null {
-  if (!hasLayers(storage)) return files.get(resourcePath) ?? null;
-  const resolution = resolveLayeredPath(
-    storedFileView(files.keys(), tombstones),
-    storage,
-    resourcePath,
-    'self',
-  );
-  if (resolution.kind !== 'found') return null;
-  return files.get(resolution.path) ?? null;
-}
-
-/**
- * Build DNR redirect specs from the (normalized) routes of a package.
+ * Build DNR redirect specs from the (normalized) routes of a package
+ * (single-package view; composite serving lives in lib/serving.ts).
  * Handler routes are accepted but not served (execution is deferred;
  * reactors respond 501). With layered storage, routes whose resource
  * resolves tombstoned/not-found are skipped (serving them would be a 404).
@@ -61,43 +49,7 @@ export function buildRuleSpecs(
   storage: StorageFile | null,
   tombstones: Record<string, string[]> = {},
 ): RuleSpec[] {
-  const layered = hasLayers(storage);
-  const specs: RuleSpec[] = [];
-  for (const route of routes.routes) {
-    if ('resource' in route) {
-      const file = servedFile(files, storage, tombstones, route.resource);
-      if (!file) {
-        if (layered) continue; // tombstoned or absent → 404
-        throw new Error(
-          `Route ${route.path} references missing resource ${route.resource}`,
-        );
-      }
-      specs.push({
-        path: route.path,
-        dataUri: `data:${file.contentType};base64,${file.base64}`,
-      });
-    } else if ('dataset' in route) {
-      const dataSet = storage?.storage.dataSets[route.dataset];
-      const source = dataSet?.source ?? dataSet?.databaseFile;
-      if (source === undefined) {
-        throw new Error(
-          `Route ${route.path} references unknown dataset "${route.dataset}"`,
-        );
-      }
-      const file = servedFile(files, storage, tombstones, source);
-      if (!file) {
-        if (layered) continue; // tombstoned or absent → 404
-        throw new Error(
-          `Dataset "${route.dataset}" source file ${source} not found`,
-        );
-      }
-      specs.push({
-        path: route.path,
-        dataUri: `data:${file.contentType};base64,${file.base64}`,
-      });
-    }
-  }
-  return specs;
+  return buildOwnRuleSpecs({ routes, storage, tombstones, files });
 }
 
 /**
@@ -155,12 +107,15 @@ export class CapsiumService {
       capId,
       {
         metadata: pkg.metadata,
+        manifest: pkg.manifest,
         routes: pkg.routes,
         storage: pkg.storage,
         files: prepared.map((file) => file.path),
         validity: pkg.validity,
         checksums: pkg.checksums,
+        signature: pkg.signature,
         tombstones: pkg.tombstones,
+        dependencies: {},
       },
       prepared,
     );
@@ -181,6 +136,81 @@ export class CapsiumService {
 
     await this.tabs.create({ url: `https://${capId}.cap/` });
     return capId;
+  }
+
+  /**
+   * Popup entry point (§4a): install a dependency .cap for an already-open
+   * composite package. The dependency's guid must be declared in the
+   * dependent's metadata; its exported content then serves as a lower
+   * read-only layer under the dependent's URL space.
+   */
+  async addDependencyFromDataUri(
+    parentCapId: string,
+    dataUri: string,
+    privateKey?: string,
+  ): Promise<OpenCapResponse> {
+    try {
+      const parentInfo = await this.store.getInfo(parentCapId);
+      if (!parentInfo) {
+        return {
+          ok: false,
+          error: 'The package is no longer installed — open it again first',
+        };
+      }
+      const { bytes } = parseDataUri(dataUri);
+      const pkg = await this.loader.load(bytes, { privateKey });
+      const guid = pkg.metadata.guid;
+      if (guid === undefined || !(guid in parentInfo.metadata.dependencies)) {
+        return {
+          ok: false,
+          error: `"${pkg.metadata.name}" (guid ${guid ?? '—'}) is not a declared dependency of "${parentInfo.metadata.name}"`,
+        };
+      }
+
+      const depCapId = crypto.randomUUID();
+      // HTML is rewritten against the PARENT origin: the dependency's
+      // content lives in the dependent's URL space.
+      const prepared = await this.prepareFiles(parentCapId, pkg);
+      await this.store.install(
+        depCapId,
+        {
+          metadata: pkg.metadata,
+          manifest: pkg.manifest,
+          routes: pkg.routes,
+          storage: pkg.storage,
+          files: prepared.map((file) => file.path),
+          validity: pkg.validity,
+          checksums: pkg.checksums,
+          signature: pkg.signature,
+          tombstones: pkg.tombstones,
+          dependencyOf: { parent: parentCapId, guid },
+        },
+        prepared,
+      );
+
+      const previous = parentInfo.dependencies ?? {};
+      parentInfo.dependencies = { ...previous, [guid]: depCapId };
+      await this.store.updateInfo(parentCapId, parentInfo);
+      try {
+        await this.rebuildRules(parentCapId);
+      } catch (error) {
+        // Roll back: drop the dependency and restore the parent record.
+        await this.store.removePackage(depCapId);
+        parentInfo.dependencies = previous;
+        await this.store.updateInfo(parentCapId, parentInfo);
+        throw error;
+      }
+
+      return { ok: true, info: await this.viewInfoFromStored(parentCapId) };
+    } catch (error) {
+      if (error instanceof PackageError && error.code === 'encryption') {
+        return { ok: false, error: error.message, needsPrivateKey: true };
+      }
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /** Rewrite HTML files against their own in-package directory, then base64-encode. */
@@ -215,10 +245,22 @@ export class CapsiumService {
   async sweepExpired(): Promise<string[]> {
     const now = this.now();
     const index = await this.store.listIndex();
-    const expired = index
-      .filter((entry) => now - entry.timeAdded > this.maxAgeMs)
-      .map((entry) => entry.capId);
+    const expired: string[] = [];
+    for (const entry of index) {
+      if (now - entry.timeAdded <= this.maxAgeMs) continue;
+      const info = await this.store.getInfo(entry.capId);
+      // Dependencies expire only together with their dependent package.
+      if (info?.dependencyOf !== undefined) continue;
+      expired.push(entry.capId);
+    }
+    const removed = new Set<string>(expired);
     for (const capId of expired) {
+      const info = await this.store.getInfo(capId);
+      for (const depCapId of Object.values(info?.dependencies ?? {})) {
+        removed.add(depCapId);
+      }
+    }
+    for (const capId of removed) {
       await this.rules.removePackageRules(capId);
       await this.store.removePackage(capId);
     }
@@ -242,19 +284,107 @@ export class CapsiumService {
         await this.rules.removePackageRules(capId);
         continue;
       }
-      const files = new Map<string, { contentType: string; base64: string }>();
-      for (const path of info.files) {
-        const file = await this.store.getFile(capId, path);
-        if (file) files.set(path, file);
-      }
-      const specs = buildRuleSpecs(
-        info.routes,
-        files,
-        info.storage,
-        info.tombstones ?? {},
-      );
-      await this.rules.installPackageRules(capId, specs);
+      // Dependencies have no rules of their own; they serve under the
+      // dependent's origin and are covered by its rebuild.
+      if (info.dependencyOf !== undefined) continue;
+      await this.rebuildRules(capId);
     }
+  }
+
+  /** Read all stored files of a package into a serving map. */
+  private async loadFiles(
+    capId: string,
+    paths: string[],
+  ): Promise<ServingFiles> {
+    const files: ServingFiles = new Map();
+    for (const path of paths) {
+      const file = await this.store.getFile(capId, path);
+      if (file) files.set(path, file);
+    }
+    return files;
+  }
+
+  /** Installed dependencies of a package as serving views (§4a). */
+  private async dependencyServingViews(
+    info: StoredPackageInfo,
+  ): Promise<InstalledDependencyView[]> {
+    const views: InstalledDependencyView[] = [];
+    for (const [guid, depCapId] of Object.entries(info.dependencies ?? {})) {
+      const depInfo = await this.store.getInfo(depCapId);
+      if (!depInfo) continue;
+      views.push({
+        guid,
+        manifest: depInfo.manifest ?? { resources: {} },
+        routes: depInfo.routes,
+        storage: depInfo.storage,
+        tombstones: depInfo.tombstones ?? {},
+        files: await this.loadFiles(depCapId, depInfo.files),
+        filePaths: depInfo.files,
+      });
+    }
+    return views;
+  }
+
+  /** (Re)build a package's DNR rules, including inherited dependency routes. */
+  private async rebuildRules(capId: string): Promise<void> {
+    const info = await this.store.getInfo(capId);
+    if (!info) throw new Error(`Package ${capId} is not installed`);
+    const specs = buildCompositeRuleSpecs(
+      {
+        routes: info.routes,
+        storage: info.storage,
+        tombstones: info.tombstones ?? {},
+        files: await this.loadFiles(capId, info.files),
+      },
+      await this.dependencyServingViews(info),
+    );
+    await this.rules.installPackageRules(capId, specs);
+  }
+
+  /** View info rebuilt from storage (after dependency changes). */
+  private async viewInfoFromStored(capId: string): Promise<PackageViewInfo> {
+    const info = await this.store.getInfo(capId);
+    if (!info) throw new Error(`Package ${capId} is not installed`);
+    return {
+      capId,
+      name: info.metadata.name,
+      version: info.metadata.version,
+      ...(info.metadata.description !== undefined
+        ? { description: info.metadata.description }
+        : {}),
+      ...(info.metadata.author !== undefined
+        ? { author: info.metadata.author }
+        : {}),
+      entryUrl: `https://${capId}.cap/`,
+      routes: info.routes.routes.map(toRouteView),
+      validity: info.validity,
+      checksums: info.checksums,
+      signature: info.signature ?? 'absent',
+      dependencies: await this.dependencyStatuses(info),
+    };
+  }
+
+  /** Popup dependency list: every declared guid with its install status. */
+  private async dependencyStatuses(
+    info: StoredPackageInfo,
+  ): Promise<DependencyViewInfo[]> {
+    return Promise.all(
+      Object.entries(info.metadata.dependencies).map(async ([guid, range]) => {
+        const depCapId = info.dependencies?.[guid];
+        const depInfo = depCapId
+          ? await this.store.getInfo(depCapId)
+          : null;
+        return depInfo
+          ? {
+              guid,
+              range,
+              status: 'installed' as const,
+              name: depInfo.metadata.name,
+              version: depInfo.metadata.version,
+            }
+          : { guid, range, status: 'missing' as const };
+      }),
+    );
   }
 
   private toViewInfo(pkg: LoadedPackage, capId: string): PackageViewInfo {
@@ -273,6 +403,10 @@ export class CapsiumService {
       validity: pkg.validity,
       checksums: pkg.checksums,
       signature: pkg.signature,
+      // Just opened: declared dependencies are all still missing.
+      dependencies: Object.entries(pkg.metadata.dependencies).map(
+        ([guid, range]) => ({ guid, range, status: 'missing' as const }),
+      ),
     };
   }
 }

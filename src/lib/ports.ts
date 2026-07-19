@@ -15,19 +15,41 @@ export interface StoragePort {
   remove(keys: string[]): Promise<void>;
 }
 
-/** A declarativeNetRequest session rule (redirect to a data: URI). */
-export interface DnrRule {
+/** One header operation of a modifyHeaders rule. */
+export interface DnrHeaderOperation {
+  header: string;
+  operation: 'set' | 'append' | 'remove';
+  value?: string;
+}
+
+interface DnrRuleBase {
   id: number;
   priority: number;
-  action: {
-    type: 'redirect';
-    redirect: { url: string };
-  };
   condition: {
     regexFilter: string;
     resourceTypes: string[];
   };
 }
+
+/** A declarativeNetRequest session rule redirecting to a data: URI. */
+export interface DnrRedirectRule extends DnrRuleBase {
+  action: {
+    type: 'redirect';
+    redirect: { url: string };
+  };
+}
+
+/** A session rule attaching request/response headers (route inheritance). */
+export interface DnrModifyHeadersRule extends DnrRuleBase {
+  action: {
+    type: 'modifyHeaders';
+    requestHeaders?: DnrHeaderOperation[];
+    responseHeaders?: DnrHeaderOperation[];
+  };
+}
+
+/** A declarativeNetRequest session rule. */
+export type DnrRule = DnrRedirectRule | DnrModifyHeadersRule;
 
 /** Minimal chrome.declarativeNetRequest surface (session rules). */
 export interface DnrPort {

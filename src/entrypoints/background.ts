@@ -8,7 +8,7 @@ import {
   OffscreenHtmlRewriter,
 } from '../lib/offscreen-rewriter';
 import { CapsiumService, SWEEP_ALARM_NAME } from '../lib/background-service';
-import { isOpenCapRequest } from '../lib/messages';
+import { isAddDependencyRequest, isOpenCapRequest } from '../lib/messages';
 import type {
   DnrPort,
   HtmlRewriter,
@@ -121,8 +121,17 @@ export default defineBackground(() => {
   void service.onStartup();
 
   browser.runtime.onMessage.addListener((message: unknown) => {
-    if (!isOpenCapRequest(message)) return undefined;
-    return service.openFromDataUri(message.dataURI, message.privateKey);
+    if (isOpenCapRequest(message)) {
+      return service.openFromDataUri(message.dataURI, message.privateKey);
+    }
+    if (isAddDependencyRequest(message)) {
+      return service.addDependencyFromDataUri(
+        message.parentCapId,
+        message.dataURI,
+        message.privateKey,
+      );
+    }
+    return undefined;
   });
 
   // Periodic expiry sweep (packages live at most maxAgeMs).
