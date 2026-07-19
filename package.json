@@ -1,6 +1,6 @@
 {
   "name": "capsium-viewer-webextension",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Browser extension (MV3) that loads and renders Capsium .cap packages in the browser",
