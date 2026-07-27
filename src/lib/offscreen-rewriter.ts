@@ -3,16 +3,27 @@ import type {
   OffscreenPort,
   RuntimeMessagingPort,
 } from './ports';
-import { rewriteHtmlUrls } from './html-rewrite';
+import { rewriteHtmlUrls, extractInlineScripts } from './html-rewrite';
 import { REWRITE_REQUEST_TYPE, isRewriteHtmlResponse } from './messages';
 
 /**
  * Rewrites HTML directly with the ambient DOMParser. Used where DOMParser is
  * available in the background context: Firefox event pages (and tests).
+ *
+ * On Firefox, inline `<script>` elements are blocked by the MV2 CSP
+ * (script-src 'self' blob: — no 'unsafe-inline'). The rewriter extracts
+ * inline script content into blob: URLs before serving so the scripts
+ * execute under the blob: CSP directive. On Chrome this path is not
+ * used (the sandbox page handles inline scripts natively).
  */
 export class DirectHtmlRewriter implements HtmlRewriter {
   rewrite(html: string, baseUrl: string): Promise<string> {
-    return Promise.resolve(rewriteHtmlUrls(html, baseUrl));
+    const urlRewritten = rewriteHtmlUrls(html, baseUrl);
+    const inlineExtracted = extractInlineScripts(urlRewritten, (content, type) => {
+      const blob = new Blob([content], { type });
+      return URL.createObjectURL(blob);
+    });
+    return Promise.resolve(inlineExtracted);
   }
 }
 
