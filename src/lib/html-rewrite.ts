@@ -50,6 +50,37 @@ export function rewriteHtmlUrls(html: string, baseUrl: string): string {
   return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
 }
 
+/**
+ * Extract inline `<script>` elements and replace them with
+ * `<script src="blob:...">` references. Required for Firefox where
+ * the MV2 CSP blocks `'unsafe-inline'` but allows `blob:` script
+ * sources. On Chrome (sandbox page), inline scripts already work via
+ * the sandbox CSP; this function is a no-op there (callers check the
+ * browser before applying).
+ *
+ * The `createBlobUrl` function is injected by the caller so blob
+ * URLs are created in the right context (background for Firefox,
+ * sandbox for Chrome). Returns the rewritten HTML.
+ */
+export function extractInlineScripts(
+  html: string,
+  createBlobUrl: (content: string, type: string) => string,
+): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  let count = 0;
+  for (const script of doc.querySelectorAll('script')) {
+    if (script.hasAttribute('src')) continue;
+    const text = script.textContent;
+    if (text === null || text.trim() === '') continue;
+
+    const blobUrl = createBlobUrl(text, 'text/javascript');
+    script.textContent = '';
+    script.setAttribute('src', blobUrl);
+    count += 1;
+  }
+  return count > 0 ? `<!DOCTYPE html>\n${doc.documentElement.outerHTML}` : html;
+}
+
 /** URL-space directory (with trailing slash) for a package-relative file path. */
 export function baseUrlForResource(
   capId: string,

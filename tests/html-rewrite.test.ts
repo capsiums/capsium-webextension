@@ -4,6 +4,7 @@ import {
   baseUrlForResource,
   resolvePackageUrl,
   rewriteHtmlUrls,
+  extractInlineScripts,
 } from '../src/lib/html-rewrite';
 import { DirectHtmlRewriter } from '../src/lib/offscreen-rewriter';
 
@@ -81,5 +82,45 @@ describe('rewriteHtmlUrls', () => {
       NESTED_BASE,
     );
     expect(out).toContain(`href="https://${CAP}.cap/documents/report/a.html"`);
+  });
+});
+
+describe('extractInlineScripts', () => {
+  const makeBlobUrl = (content: string, type: string): string => {
+    const blob = new Blob([content], { type });
+    return URL.createObjectURL(blob);
+  };
+
+  it('extracts inline script content into blob URLs', () => {
+    const html = '<html><body><script>console.log("hi")</script></body></html>';
+    const result = extractInlineScripts(html, makeBlobUrl);
+    expect(result).toContain('<script src="blob:');
+    expect(result).not.toContain('console.log("hi")');
+  });
+
+  it('leaves external scripts untouched', () => {
+    const html = '<html><body><script src="/app.js"></script></body></html>';
+    const result = extractInlineScripts(html, makeBlobUrl);
+    expect(result).toContain('src="/app.js"');
+  });
+
+  it('returns the HTML unchanged when there are no inline scripts', () => {
+    const html = '<html><body><p>no scripts here</p></body></html>';
+    expect(extractInlineScripts(html, makeBlobUrl)).toBe(html);
+  });
+
+  it('handles multiple inline scripts', () => {
+    const html =
+      '<html><body><script>var a = 1</script><script>var b = 2</script></body></html>';
+    const result = extractInlineScripts(html, makeBlobUrl);
+    const blobCount = (result.match(/src="blob:/g) || []).length;
+    expect(blobCount).toBe(2);
+  });
+
+  it('DirectHtmlRewriter extracts inline scripts on the Firefox path', async () => {
+    const html =
+      '<html><body><script>console.log("inline")</script></body></html>';
+    const result = await new DirectHtmlRewriter().rewrite(html, NESTED_BASE);
+    expect(result).toContain('<script src="blob:');
   });
 });
