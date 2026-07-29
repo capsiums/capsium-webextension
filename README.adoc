@@ -158,6 +158,7 @@ npm run test        # vitest suite (chrome.* APIs mocked via DI fakes)
 npm run lint        # eslint (flat config)
 npm run typecheck   # tsc --noEmit
 npm run build       # production build: .output/chrome-mv3 + .output/firefox-mv2
+npm run smoke       # build + Mozilla web-ext lint (Firefox MV2 must report zero errors)
 npm run zip         # distributable zips in .output/
 ----
 

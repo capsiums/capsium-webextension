@@ -1,0 +1,50 @@
+name: Smoke (Firefox + Chrome builds)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  firefox-lint:
+    name: web-ext lint (Firefox MV2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Lint the Firefox MV2 build (must report zero errors)
+        run: |
+          set -o pipefail
+          npx web-ext lint --source-dir .output/firefox-mv2 --metadata \
+            | jq -e '.errors | length == 0' \
+            || (echo "Firefox MV2 build has errors — see web-ext output above" && exit 1)
+      - name: Verify the Firefox MV2 manifest is valid
+        run: |
+          jq '.manifest_version // .manifestVersion' .output/firefox-mv2/manifest.json
+          test -f .output/firefox-mv2/background.js
+          test -f .output/firefox-mv2/router.html
+
+  chrome-build:
+    name: Chrome MV3 build smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify the Chrome MV3 manifest is valid
+        run: |
+          jq '.manifest_version' .output/chrome-mv3/manifest.json
+          test -f .output/chrome-mv3/background.js
+          test -f .output/chrome-mv3/sandbox.html

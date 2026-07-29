@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "smoke": "wxt build && wxt build -b firefox && web-ext lint --source-dir .output/firefox-mv2",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "harness:build": "esbuild harness/serve.ts --bundle --platform=node --target=node24 --format=esm --outfile=harness/serve.mjs --banner:js=\"import { createRequire as __harnessCreateRequire } from 'node:module'; const require = __harnessCreateRequire(import.meta.url);\""
@@ -42,6 +43,7 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.64.0",
     "vitest": "^4.1.10",
+    "web-ext": "^10.5.0",
     "wxt": "^0.20.27",
     "yaml": "^2.9.0"
   }
