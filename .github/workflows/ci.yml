@@ -24,6 +24,13 @@ jobs:
       - run: npm run test
       - run: npm run build
       - run: npm run zip
+      - name: List built artifacts (debug)
+        run: |
+          echo "Working directory: $(pwd)"
+          echo "---"
+          ls -la .output/ 2>&1 || echo "NO .output/ DIRECTORY"
+          echo "---"
+          find .output -name '*.zip' -type f 2>&1 || echo "NO .ZIP FILES FOUND"
       - uses: actions/upload-artifact@v4
         with:
           name: capsium-viewer-node${{ matrix.node }}
